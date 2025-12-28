@@ -21,7 +21,7 @@ To simplify installation, a **`setup.sh` script** is provided that installs and 
 ### 1️⃣ Clone the Repository
 
 ```bash
-git clone https://github.com/<your-username>/ReconEngine.git
+git clone git@github.com:chanakayaa/r3c0n_engin3.git
 cd ReconEngine
 ```
 
