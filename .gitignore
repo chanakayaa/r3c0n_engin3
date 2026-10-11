@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ASM runtime artifacts
+asm.db
+asm.db-journal
+asm.db-wal
+results/
+*_asm_report.html
+nuclei.jsonl
+
+# Local config (may contain webhook URLs)
+asm.config.json
+
+# OS / editor
+.DS_Store
+*.swp

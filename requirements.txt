@@ -1,0 +1,8 @@
+# ReconEngine ASM – Python dependencies
+#
+# The ASM core (inventory, diffing, vuln ingestion, alerting, reporting)
+# uses ONLY the Python standard library, so these are optional niceties
+# for the recon layer. The external recon/scan tools (subfinder, httpx,
+# nmap, nuclei, ...) are installed separately via setup.sh.
+
+tqdm>=4.66        # progress bars during DNS resolution (optional)

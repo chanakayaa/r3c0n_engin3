@@ -13,7 +13,12 @@ import re
 from pathlib import Path
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from tqdm import tqdm
+
+try:
+    from tqdm import tqdm
+except ImportError:  # progress bar is optional; degrade to a no-op wrapper
+    def tqdm(iterable=None, **kwargs):
+        return iterable if iterable is not None else []
 
 MAX_WORKERS = 10
 
@@ -258,6 +263,30 @@ class ReconEngine:
 
         self.write(readable, "\n".join(out))
 
+    # ================= VULNERABILITY SCAN =================
+
+    def vuln(self):
+        """Run nuclei against live hosts, emitting JSONL for ASM ingestion."""
+        alive = self.recon / "alive_domains.txt"
+        if not alive.exists() or not alive.read_text(errors="ignore").strip():
+            return
+        try:
+            from asm.vuln import run_nuclei  # local import keeps recon standalone
+        except Exception:
+            if self.tool("nuclei"):
+                subprocess.run([
+                    "nuclei", "-l", str(alive), "-jsonl",
+                    "-o", str(self.recon / "nuclei.jsonl"),
+                    "-severity", "critical,high,medium,low",
+                    "-silent", "-no-color",
+                ])
+            return
+        run_nuclei(
+            targets_file=alive,
+            output_file=self.recon / "nuclei.jsonl",
+            severities=["critical", "high", "medium", "low"],
+        )
+
     # ================= SCAN =================
 
     def scan(self):
@@ -291,7 +320,8 @@ class ReconEngine:
             self.crawl,
             self.dirs,
             self.harvester,
-            self.scan
+            self.scan,
+            self.vuln
         ]
 
         for step in pipeline:
