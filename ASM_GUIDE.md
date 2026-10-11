@@ -50,6 +50,44 @@ with a status of `open` or `resolved`: if a finding seen in a previous scan is
 absent in the current one, it is automatically marked **resolved** and a
 `finding_resolved` change is recorded.
 
+### Threat-intelligence enrichment & risk scoring
+
+Raw severity isn't enough to decide what to fix first. After each vuln scan,
+findings are enriched (see `asm/intel.py`) and assigned a **risk score (0–100)**
+that blends three free, no-key data sources:
+
+| Signal | Source | Meaning |
+|--------|--------|---------|
+| **KEV** | [CISA Known Exploited Vulnerabilities](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) | The CVE is **being exploited in the wild** right now |
+| **EPSS** | [FIRST.org EPSS](https://www.first.org/epss/) | Probability (0–1) the CVE will be exploited in the next 30 days |
+| **CVE / CVSS** | [NVD](https://nvd.nist.gov/) (optional) | Map a product+version/CPE to its CVEs (`--nvd`, honours `NVD_API_KEY`) |
+
+```
+risk = base(severity) + epss·40 + (20 if KEV) , capped at 100
+```
+
+So a **KEV critical with EPSS 0.97 scores ~99**, while a high-severity CVE with
+no known exploitation and low EPSS scores far lower — the queue sorts by what
+attackers are *actually* using. The formula is deliberately simple and
+explainable.
+
+CVE ids are extracted from the nuclei `template-id`, the `classification.cve-id`
+field, and tags/references.
+
+**Caching & offline behaviour.** KEV and EPSS responses are cached under
+`~/.cache/recon-asm` (override with the `RECON_ASM_CACHE` env var or
+`intel_cache_dir` in config), refreshed roughly daily. With `--offline` (or no
+connectivity) enrichment uses only the cache; with neither network nor cache it
+is skipped cleanly and the risk score falls back to severity alone.
+
+Refresh the cache ahead of a scan:
+
+```bash
+python3 asm.py intel-update
+```
+
+Disable enrichment entirely with `--no-intel`.
+
 ---
 
 ## Commands
@@ -68,6 +106,7 @@ python3 asm.py <command> [options]
 | `findings` | List findings for a target |
 | `changes` | Show recorded changes for a target |
 | `report` | Generate an ASM HTML report |
+| `intel-update` | Refresh the local CISA KEV / EPSS intel cache |
 | `init` | Write a sample config file |
 
 ### `scan`
@@ -141,6 +180,9 @@ python3 asm.py init -o asm.config.json
   "severities": ["critical", "high", "medium", "low"],
   "nuclei_rate_limit": 150,
   "nuclei_templates": null,
+  "intel_enrich": true,
+  "intel_offline": false,
+  "intel_cache_dir": null,
   "crawl": false,
   "dirs": false,
   "webhook": null,

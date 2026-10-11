@@ -29,6 +29,11 @@ class Config:
     crawl: bool = False
     dirs: bool = False
 
+    # threat-intel enrichment & risk scoring
+    intel_enrich: bool = True
+    intel_offline: bool = False
+    intel_cache_dir: Optional[str] = None
+
     # alerting
     webhook: Optional[str] = None
     slack_webhook: Optional[str] = None
@@ -51,6 +56,10 @@ class Config:
                 setattr(self, attr, val)
         if getattr(args, "no_vuln", False):
             self.vuln_scan = False
+        if getattr(args, "no_intel", False):
+            self.intel_enrich = False
+        if getattr(args, "offline", False):
+            self.intel_offline = True
         if getattr(args, "crawl", False):
             self.crawl = True
         if getattr(args, "dirs", False):

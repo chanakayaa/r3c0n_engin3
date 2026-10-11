@@ -69,6 +69,10 @@ CREATE TABLE IF NOT EXISTS findings (
     severity      TEXT,
     matched_at    TEXT,
     info          TEXT,
+    cve           TEXT,
+    epss          REAL,
+    kev           INTEGER NOT NULL DEFAULT 0,
+    risk_score    REAL NOT NULL DEFAULT 0,
     first_seen_at TEXT NOT NULL,
     last_seen_at  TEXT NOT NULL,
     first_scan_id INTEGER,
@@ -103,7 +107,22 @@ class Store:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        """Add columns introduced after the first release to older DBs."""
+        cols = {r["name"] for r in
+                self.conn.execute("PRAGMA table_info(findings)").fetchall()}
+        for name, ddl in (
+            ("cve", "ALTER TABLE findings ADD COLUMN cve TEXT"),
+            ("epss", "ALTER TABLE findings ADD COLUMN epss REAL"),
+            ("kev", "ALTER TABLE findings ADD COLUMN kev INTEGER NOT NULL DEFAULT 0"),
+            ("risk_score",
+             "ALTER TABLE findings ADD COLUMN risk_score REAL NOT NULL DEFAULT 0"),
+        ):
+            if name not in cols:
+                self.conn.execute(ddl)
 
     def close(self) -> None:
         self.conn.close()
@@ -235,17 +254,20 @@ class Store:
             if row:
                 self.conn.execute(
                     "UPDATE findings SET last_seen_at=?, last_scan_id=?, "
-                    "status='open', severity=?, name=?, info=? WHERE id=?",
-                    (now, scan_id, f.severity, f.name, info_json, row["id"]),
+                    "status='open', severity=?, name=?, info=?, cve=?, epss=?, "
+                    "kev=?, risk_score=? WHERE id=?",
+                    (now, scan_id, f.severity, f.name, info_json, f.cve, f.epss,
+                     1 if f.kev else 0, f.risk_score, row["id"]),
                 )
             else:
                 self.conn.execute(
                     "INSERT INTO findings(target_id, dedupe_key, template_id, name, "
-                    "severity, matched_at, info, first_seen_at, last_seen_at, "
-                    "first_scan_id, last_scan_id, status) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,'open')",
+                    "severity, matched_at, info, cve, epss, kev, risk_score, "
+                    "first_seen_at, last_seen_at, first_scan_id, last_scan_id, status) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'open')",
                     (target_id, dk, f.template_id, f.name, f.severity, f.matched_at,
-                     info_json, now, now, scan_id, scan_id),
+                     info_json, f.cve, f.epss, 1 if f.kev else 0, f.risk_score,
+                     now, now, scan_id, scan_id),
                 )
 
     # ------------------------------------------------------------------ #
@@ -361,7 +383,9 @@ class Store:
         if min_severity:
             floor = severity_rank(min_severity)
             rows = [r for r in rows if severity_rank(r["severity"]) >= floor]
-        rows.sort(key=lambda r: severity_rank(r["severity"]), reverse=True)
+        # Prioritize by blended risk score, then severity as a tiebreaker.
+        rows.sort(key=lambda r: (r["risk_score"] or 0,
+                                 severity_rank(r["severity"])), reverse=True)
         return rows
 
     def latest_scan(self, target: str) -> Optional[sqlite3.Row]:

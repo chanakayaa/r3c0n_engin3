@@ -64,6 +64,13 @@ class Finding:
     matched_at: str                      # url / host:port the finding hit
     info: Dict[str, Any] = field(default_factory=dict)
 
+    # Threat-intelligence enrichment (populated by asm.intel). These stay at
+    # their defaults when enrichment is disabled or runs offline with no cache.
+    cve: Optional[str] = None
+    epss: Optional[float] = None         # 0..1 exploit-prediction probability
+    kev: bool = False                    # on CISA Known-Exploited-Vulns list
+    risk_score: float = 0.0              # 0..100 prioritization score
+
     def dedupe_key(self) -> str:
         # A finding is "the same" across scans when template + location match.
         return f"{self.template_id}|{self.matched_at}".strip().lower()

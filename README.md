@@ -18,6 +18,7 @@ The ASM layer (`asm.py`) adds the "monitoring" half of the tool on top of recon:
 * **Persistent asset inventory** — every subdomain, IP, service (`ip:port`), live URL and technology is stored in a local SQLite database (`asm.db`) and tracked across scans.
 * **Change detection / diffing** — each scan is compared to the previous one for the same target. New subdomains, newly-opened ports, and surface shrink are surfaced automatically; the first scan establishes a silent baseline.
 * **Vulnerability tracking** — nuclei findings are de-duplicated by template + location, so you see *new* findings and *resolved* findings, not the same list every run.
+* **Threat-intel risk scoring** — every finding is enriched with **CISA KEV** (known-exploited) and **EPSS** (exploit probability) and given a 0–100 **risk score**, so the queue is sorted by what attackers are actually using — not raw severity. Cached & offline-capable; free, no API key.
 * **Alerting** — new assets and new findings can be pushed to a generic JSON webhook or a Slack incoming webhook, with a configurable severity floor.
 * **Continuous monitoring** — run on an interval with `asm.py watch`, or (recommended for production) from `cron` / a systemd timer.
 

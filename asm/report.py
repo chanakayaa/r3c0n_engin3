@@ -91,15 +91,26 @@ def build_asm_report(store: Store, target: str, out_path: str) -> str:
                              f"</div><div class='l'>{sev}</div></div>")
         parts.append("</div>")
     if findings:
-        parts.append("<table><tr><th>Severity</th><th>Name</th>"
+        parts.append("<table><tr><th>Risk</th><th>Severity</th><th>KEV</th>"
+                     "<th>EPSS</th><th>CVE</th><th>Name</th>"
                      "<th>Location</th><th>First seen</th></tr>")
         for f in findings:
+            risk = f["risk_score"] or 0
+            kev = ("<span class='sev critical'>KEV</span>" if f["kev"] else
+                   "<span class='muted'>—</span>")
+            epss = f"{f['epss']:.2f}" if f["epss"] is not None else "—"
+            cve = _esc(f["cve"]) if f["cve"] else "<span class='muted'>—</span>"
             parts.append(
-                f"<tr><td>{_sev_badge(f['severity'])}</td>"
+                f"<tr><td><b>{risk:.1f}</b></td>"
+                f"<td>{_sev_badge(f['severity'])}</td>"
+                f"<td>{kev}</td><td>{epss}</td><td>{cve}</td>"
                 f"<td>{_esc(f['name'])}</td>"
                 f"<td>{_esc(f['matched_at'])}</td>"
                 f"<td class='muted'>{_esc(f['first_seen_at'])}</td></tr>")
         parts.append("</table>")
+        parts.append("<p class='muted'>Risk = severity blended with EPSS "
+                     "(exploit probability) and CISA KEV (known-exploited). "
+                     "Higher = fix first.</p>")
     else:
         parts.append("<p class='muted'>No open findings.</p>")
 

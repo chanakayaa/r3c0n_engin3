@@ -166,6 +166,7 @@ def parse_nuclei_jsonl(text: str) -> List[Finding]:
                 "description": info.get("description", ""),
                 "tags": info.get("tags", []),
                 "reference": info.get("reference", []),
+                "classification": info.get("classification", {}),
                 "type": obj.get("type", ""),
             },
         ))

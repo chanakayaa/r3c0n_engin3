@@ -56,6 +56,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--crawl", action="store_true")
     sp.add_argument("--dirs", action="store_true")
     sp.add_argument("--no-vuln", action="store_true", help="skip vuln scanning")
+    sp.add_argument("--no-intel", action="store_true",
+                    help="skip KEV/EPSS enrichment & risk scoring")
+    sp.add_argument("--offline", action="store_true",
+                    help="use only cached intel (no network for KEV/EPSS)")
     sp.add_argument("--severity", help="comma list, e.g. critical,high,medium")
     sp.add_argument("--nuclei-templates", help="custom nuclei template path")
     sp.add_argument("--webhook", help="generic JSON webhook for alerts")
@@ -70,6 +74,8 @@ def build_parser() -> argparse.ArgumentParser:
     wp.add_argument("--crawl", action="store_true")
     wp.add_argument("--dirs", action="store_true")
     wp.add_argument("--no-vuln", action="store_true")
+    wp.add_argument("--no-intel", action="store_true")
+    wp.add_argument("--offline", action="store_true")
     wp.add_argument("--severity")
     wp.add_argument("--nuclei-templates")
     wp.add_argument("--webhook")
@@ -80,7 +86,13 @@ def build_parser() -> argparse.ArgumentParser:
     ip = sub.add_parser("ingest", help="import an existing results directory")
     ip.add_argument("-t", "--target", required=True)
     ip.add_argument("results_dir")
+    ip.add_argument("--no-intel", action="store_true")
+    ip.add_argument("--offline", action="store_true")
     _add_common(ip)
+
+    up = sub.add_parser("intel-update",
+                        help="refresh the local KEV/EPSS intel cache")
+    _add_common(up)
 
     tp = sub.add_parser("targets", help="list tracked targets")
     _add_common(tp)
@@ -146,6 +158,11 @@ def cmd_ingest(args) -> int:
     try:
         scan_id = store.start_scan(args.target, results_dir=args.results_dir)
         result = ingest_results(args.target, args.results_dir)
+        if cfg.intel_enrich and result.findings:
+            from .intel import Enricher
+            cache = Path(cfg.intel_cache_dir) if cfg.intel_cache_dir else None
+            Enricher(cache_dir=cache, offline=cfg.intel_offline).enrich(
+                result.findings)
         changes = store.record_result(scan_id, result)
         print(f"[✓] Ingested {len(result.assets)} assets, "
               f"{len(result.findings)} findings, {len(changes)} changes "
@@ -190,12 +207,29 @@ def cmd_findings(args) -> int:
     try:
         rows = store.findings(args.target, status=args.status,
                              min_severity=args.min_severity)
+        if rows:
+            print(f"{'RISK':>5}  {'SEV':8} {'KEV':3} {'EPSS':>6}  "
+                  f"{'CVE':16} NAME @ LOCATION")
+            print("-" * 96)
         for r in rows:
-            print(f"[{(r['severity'] or 'unknown').upper():8}] "
-                  f"{r['name']}  @ {r['matched_at']}  ({r['status']})")
-        print(f"\n{len(rows)} findings")
+            epss = f"{r['epss']:.2f}" if r["epss"] is not None else "  -  "
+            kev = "KEV" if r["kev"] else " - "
+            cve = r["cve"] or ""
+            print(f"{(r['risk_score'] or 0):>5.1f}  "
+                  f"{(r['severity'] or 'unknown').upper():8} {kev:3} {epss:>6}  "
+                  f"{cve:16} {r['name']} @ {r['matched_at']}")
+        print(f"\n{len(rows)} findings (sorted by risk score)")
     finally:
         store.close()
+    return 0
+
+
+def cmd_intel_update(args) -> int:
+    from .intel import Enricher
+    cfg = _load_config(args)
+    cache = Path(cfg.intel_cache_dir) if cfg.intel_cache_dir else None
+    stats = Enricher(cache_dir=cache, offline=False).refresh_feeds()
+    print(f"[✓] KEV cache refreshed: {stats.get('kev_entries', 0)} entries")
     return 0
 
 
@@ -242,6 +276,7 @@ _DISPATCH = {
     "findings": cmd_findings,
     "changes": cmd_changes,
     "report": cmd_report,
+    "intel-update": cmd_intel_update,
     "init": cmd_init,
 }
 

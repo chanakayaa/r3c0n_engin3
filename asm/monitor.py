@@ -62,6 +62,14 @@ def run_pass(target: str, config: Config,
         # 3. Ingest artifacts into a structured result.
         result = ingest_results(target, str(base_dir))
 
+        # 3b. Threat-intel enrichment + risk scoring (KEV / EPSS).
+        if config.intel_enrich and result.findings:
+            from .intel import Enricher  # lazy: avoids import cost when disabled
+            from pathlib import Path as _Path
+            cache = _Path(config.intel_cache_dir) if config.intel_cache_dir else None
+            Enricher(cache_dir=cache, offline=config.intel_offline).enrich(
+                result.findings)
+
         # 4. Persist + diff against previous pass.
         store.conn.execute(
             "UPDATE scans SET results_dir=? WHERE id=?", (str(base_dir), scan_id)
