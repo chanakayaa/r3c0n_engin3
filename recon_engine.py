@@ -359,7 +359,7 @@ class ReconEngine:
             print(f"[!] {len(missing)}/{len(self.EXPECTED_TOOLS)} recon tools "
                   f"not found: {', '.join(missing)}")
             print("[!] Those stages will be skipped. Install the toolchain with "
-                  "`sudo ./setup.sh` for full coverage.\n")
+                  "`bash setup.sh` (not sudo) for full coverage.\n")
 
 # ================= ENTRY =================
 
