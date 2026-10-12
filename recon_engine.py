@@ -123,11 +123,16 @@ class ReconEngine:
         self.write(self.recon / "domain_ips.txt", "\n".join(self.ips))
 
     def alive(self):
-        subprocess.run(
-            ["httpx", "-l", self.recon / "subdomains.txt", "-silent"],
-            stdout=(self.recon / "alive_domains.txt").open("w")
-        )
         self.alive_domains = self.recon / "alive_domains.txt"
+        if not self.tool("httpx"):
+            print("[!] httpx not installed, skipping live-host probing")
+            self.alive_domains.touch()  # keep an empty file for later steps
+            return
+        with self.alive_domains.open("w") as out:
+            subprocess.run(
+                ["httpx", "-l", str(self.recon / "subdomains.txt"), "-silent"],
+                stdout=out,
+            )
 
     def cdn(self):
         self.write(self.recon / "cdn_origin.txt",
@@ -216,6 +221,9 @@ class ReconEngine:
             "permissions-policy"
         ]
 
+        if not self.tool("httpx") or not self.alive_domains.exists():
+            return
+
         results = []
         for url in open(self.alive_domains):
             raw = self.run(["httpx", "-u", url.strip(),
@@ -292,11 +300,14 @@ class ReconEngine:
     def scan(self):
         if not self.ips:
             return
+        if not self.tool("nmap"):
+            print("[!] nmap not installed, skipping port scan")
+            return
         tgt = self.scans / "targets.txt"
         self.write(tgt, "\n".join(self.ips))
         subprocess.run([
             "nmap", "-Pn", "-sC", "-sV",
-            "-iL", tgt, "-oA", self.scans / "nmap"
+            "-iL", str(tgt), "-oA", str(self.scans / "nmap")
         ])
 
     # ================= RUN =================
@@ -324,11 +335,31 @@ class ReconEngine:
             self.vuln
         ]
 
+        self.preflight()
+
         for step in pipeline:
             print(f"[+] {step.__name__}")
-            step()
+            try:
+                step()
+            except Exception as exc:  # a broken/missing tool must not abort the pass
+                print(f"[!] step '{step.__name__}' failed: {exc} (continuing)")
 
         print("\n[✓] Recon completed")
+
+    # Tools the pipeline drives; missing ones are skipped, not fatal.
+    EXPECTED_TOOLS = [
+        "subfinder", "assetfinder", "amass", "dnsx", "httpx", "nmap",
+        "nuclei", "whatweb", "sslscan", "wafw00f", "asnmap", "whois",
+        "waybackurls", "gau", "katana", "feroxbuster", "theHarvester",
+    ]
+
+    def preflight(self):
+        missing = [t for t in self.EXPECTED_TOOLS if not self.tool(t)]
+        if missing:
+            print(f"[!] {len(missing)}/{len(self.EXPECTED_TOOLS)} recon tools "
+                  f"not found: {', '.join(missing)}")
+            print("[!] Those stages will be skipped. Install the toolchain with "
+                  "`sudo ./setup.sh` for full coverage.\n")
 
 # ================= ENTRY =================
 
