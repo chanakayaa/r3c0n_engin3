@@ -332,7 +332,11 @@ class ReconEngine:
 
 # ================= ENTRY =================
 
-if __name__ == "__main__":
+def main():
     banner()
     args = parse_args()
     ReconEngine(args).run_all()
+
+
+if __name__ == "__main__":
+    main()

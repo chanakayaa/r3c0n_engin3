@@ -11,6 +11,41 @@ Two layers ship together:
 
 ---
 
+## 📥 Install
+
+The recon layer drives external tools (`subfinder`, `httpx`, `nmap`, `nuclei`, …)
+installed by [`setup.sh`](setup.sh). The Python package itself installs with pip
+and puts an `asm` command on your PATH:
+
+```bash
+git clone https://github.com/chanakayaa/r3c0n_engin3.git
+cd r3c0n_engin3
+
+# (recommended) isolate in a virtualenv
+python3 -m venv .venv && source .venv/bin/activate
+
+pip install .          # or:  pip install -e .   for a live/editable install
+```
+
+This installs two commands:
+
+| Command | Equivalent to | Purpose |
+|---------|---------------|---------|
+| `asm` | `python3 asm.py` | ASM platform (scan, watch, findings, report, …) |
+| `recon-engine` | `python3 recon_engine.py` | One-shot recon pipeline |
+
+```bash
+asm --help
+asm intel-update                 # pull live CISA KEV / EPSS into the cache
+asm scan -t example.com          # authorized targets only
+```
+
+> You can always run it without installing, straight from the repo:
+> `python3 asm.py <command>`. The ASM core is standard-library only; `tqdm`
+> (progress bars) is the sole pip dependency.
+
+---
+
 ## 🛰 Attack Surface Management (ASM)
 
 The ASM layer (`asm.py`) adds the "monitoring" half of the tool on top of recon:
