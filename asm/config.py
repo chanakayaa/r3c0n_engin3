@@ -39,6 +39,11 @@ class Config:
     slack_webhook: Optional[str] = None
     alert_min_severity: str = "low"
 
+    # per-finding ticket webhook (section-13 ITSM feed) + business-context tags
+    ticket_webhook: Optional[str] = None
+    ticket_min_severity: str = "high"
+    criticality: list = field(default_factory=list)  # [{pattern, criticality, ...}]
+
     @classmethod
     def load(cls, path: Optional[str]) -> "Config":
         if not path:
@@ -50,7 +55,7 @@ class Config:
     def merge_args(self, args) -> "Config":
         """Overlay argparse Namespace values when explicitly provided."""
         for attr in ("db", "webhook", "slack_webhook", "nuclei_templates",
-                     "alert_min_severity"):
+                     "alert_min_severity", "ticket_webhook", "ticket_min_severity"):
             val = getattr(args, attr, None)
             if val is not None:
                 setattr(self, attr, val)

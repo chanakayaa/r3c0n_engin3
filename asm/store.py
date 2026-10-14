@@ -8,10 +8,23 @@ diffed against the target's previous scan to surface what changed.
 
 from __future__ import annotations
 
+import fnmatch
 import json
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+# Criticality (1=low .. 5=critical) -> multiplier applied to a finding's risk.
+CRITICALITY_MULT = {1: 0.7, 2: 0.85, 3: 1.0, 4: 1.2, 5: 1.5}
+
+
+def _host_of(matched_at: str) -> str:
+    """Extract the bare host from a finding location (url, host:port, host)."""
+    s = re.sub(r"^\w+://", "", (matched_at or "").strip())
+    s = s.split("/", 1)[0]          # drop any path
+    s = s.rsplit(":", 1)[0] if s.count(":") == 1 else s  # drop :port (not IPv6)
+    return s.strip().lower()
 
 from .models import (
     Asset,
@@ -73,6 +86,10 @@ CREATE TABLE IF NOT EXISTS findings (
     epss          REAL,
     kev           INTEGER NOT NULL DEFAULT 0,
     risk_score    REAL NOT NULL DEFAULT 0,
+    attack            TEXT,
+    attack_techniques TEXT,
+    business_risk REAL NOT NULL DEFAULT 0,
+    ticketed_at   TEXT,
     first_seen_at TEXT NOT NULL,
     last_seen_at  TEXT NOT NULL,
     first_scan_id INTEGER,
@@ -91,9 +108,34 @@ CREATE TABLE IF NOT EXISTS changes (
     created_at  TEXT NOT NULL
 );
 
+-- Directed relationships between assets (subdomain->ip, ip->service, ...).
+CREATE TABLE IF NOT EXISTS asset_edges (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_id INTEGER NOT NULL REFERENCES targets(id),
+    src_id    INTEGER NOT NULL REFERENCES assets(id),
+    dst_id    INTEGER NOT NULL REFERENCES assets(id),
+    rel       TEXT NOT NULL,
+    UNIQUE(target_id, src_id, dst_id, rel)
+);
+
+-- Business-context tags: glob patterns -> criticality / data sensitivity.
+CREATE TABLE IF NOT EXISTS asset_tags (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_id   INTEGER NOT NULL REFERENCES targets(id),
+    pattern     TEXT NOT NULL,
+    kind        TEXT,
+    criticality INTEGER NOT NULL DEFAULT 3,
+    sensitivity TEXT,
+    note        TEXT,
+    created_at  TEXT NOT NULL,
+    UNIQUE(target_id, pattern, kind)
+);
+
 CREATE INDEX IF NOT EXISTS idx_assets_target ON assets(target_id, kind);
 CREATE INDEX IF NOT EXISTS idx_findings_target ON findings(target_id, status);
 CREATE INDEX IF NOT EXISTS idx_changes_scan ON changes(scan_id);
+CREATE INDEX IF NOT EXISTS idx_edges_target ON asset_edges(target_id);
+CREATE INDEX IF NOT EXISTS idx_tags_target ON asset_tags(target_id);
 """
 
 
@@ -103,9 +145,14 @@ class Store:
     def __init__(self, path: str = "asm.db"):
         self.path = str(path)
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(self.path)
+        self.conn = sqlite3.connect(self.path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
+        # WAL lets the web UI read the inventory while a scan is writing to it.
+        try:
+            self.conn.execute("PRAGMA journal_mode = WAL")
+        except sqlite3.OperationalError:
+            pass
         self.conn.executescript(SCHEMA)
         self._migrate()
         self.conn.commit()
@@ -120,6 +167,12 @@ class Store:
             ("kev", "ALTER TABLE findings ADD COLUMN kev INTEGER NOT NULL DEFAULT 0"),
             ("risk_score",
              "ALTER TABLE findings ADD COLUMN risk_score REAL NOT NULL DEFAULT 0"),
+            ("attack", "ALTER TABLE findings ADD COLUMN attack TEXT"),
+            ("attack_techniques",
+             "ALTER TABLE findings ADD COLUMN attack_techniques TEXT"),
+            ("business_risk",
+             "ALTER TABLE findings ADD COLUMN business_risk REAL NOT NULL DEFAULT 0"),
+            ("ticketed_at", "ALTER TABLE findings ADD COLUMN ticketed_at TEXT"),
         ):
             if name not in cols:
                 self.conn.execute(ddl)
@@ -190,6 +243,7 @@ class Store:
         prev_findings = self._finding_keys_open(target_id)
 
         self._upsert_assets(target_id, scan_id, result.assets)
+        self._record_edges(target_id, getattr(result, "edges", []) or [])
         self._upsert_findings(target_id, scan_id, result.findings)
 
         changes = self._diff(
@@ -246,27 +300,34 @@ class Store:
         for f in findings:
             dk = f.dedupe_key()
             info_json = json.dumps(f.info, sort_keys=True)
+            attack = getattr(f, "attack", None)
+            attack_json = json.dumps(attack, sort_keys=True) if attack else None
+            attack_tech = getattr(f, "attack_techniques", None) or None
             cur = self.conn.execute(
                 "SELECT id FROM findings WHERE target_id=? AND dedupe_key=?",
                 (target_id, dk),
             )
             row = cur.fetchone()
             if row:
+                # Preserve ticketed_at (set out-of-band); refresh everything else.
                 self.conn.execute(
                     "UPDATE findings SET last_seen_at=?, last_scan_id=?, "
                     "status='open', severity=?, name=?, info=?, cve=?, epss=?, "
-                    "kev=?, risk_score=? WHERE id=?",
+                    "kev=?, risk_score=?, attack=?, attack_techniques=? WHERE id=?",
                     (now, scan_id, f.severity, f.name, info_json, f.cve, f.epss,
-                     1 if f.kev else 0, f.risk_score, row["id"]),
+                     1 if f.kev else 0, f.risk_score, attack_json, attack_tech,
+                     row["id"]),
                 )
             else:
                 self.conn.execute(
                     "INSERT INTO findings(target_id, dedupe_key, template_id, name, "
                     "severity, matched_at, info, cve, epss, kev, risk_score, "
+                    "attack, attack_techniques, "
                     "first_seen_at, last_seen_at, first_scan_id, last_scan_id, status) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'open')",
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'open')",
                     (target_id, dk, f.template_id, f.name, f.severity, f.matched_at,
                      info_json, f.cve, f.epss, 1 if f.kev else 0, f.risk_score,
+                     attack_json, attack_tech,
                      now, now, scan_id, scan_id),
                 )
 
@@ -342,6 +403,162 @@ class Store:
             )
 
     # ------------------------------------------------------------------ #
+    # Asset relationship graph
+    # ------------------------------------------------------------------ #
+
+    def _asset_id(self, target_id: int, kind: str, key: str) -> Optional[int]:
+        row = self.conn.execute(
+            "SELECT id FROM assets WHERE target_id=? AND kind=? AND key=?",
+            (target_id, kind, (key or "").strip().lower()),
+        ).fetchone()
+        return row["id"] if row else None
+
+    def _record_edges(self, target_id: int, edges: List[tuple]) -> None:
+        """Persist (src, dst, rel) edges; endpoints are (kind, key) tuples.
+
+        Endpoints that don't resolve to a stored asset are skipped silently.
+        """
+        for edge in edges:
+            try:
+                (sk, skey), (dk, dkey), rel = edge
+            except (ValueError, TypeError):
+                continue
+            src = self._asset_id(target_id, sk, skey)
+            dst = self._asset_id(target_id, dk, dkey)
+            if src is None or dst is None or src == dst:
+                continue
+            self.conn.execute(
+                "INSERT OR IGNORE INTO asset_edges(target_id, src_id, dst_id, rel) "
+                "VALUES(?,?,?,?)",
+                (target_id, src, dst, rel),
+            )
+
+    def graph(self, target: str) -> Dict[str, Any]:
+        """Return the asset-relationship graph as {nodes, edges} for a target."""
+        target_id = self._target_id(target)
+        if target_id is None:
+            return {"nodes": [], "edges": []}
+
+        # Highest business/raw risk per host, to colour nodes by exposure.
+        risk_by_host: Dict[str, float] = {}
+        for f in self.conn.execute(
+            "SELECT matched_at, business_risk, risk_score FROM findings "
+            "WHERE target_id=? AND status='open'", (target_id,),
+        ):
+            host = _host_of(f["matched_at"])
+            score = f["business_risk"] or f["risk_score"] or 0
+            if host and score > risk_by_host.get(host, 0):
+                risk_by_host[host] = score
+
+        nodes = []
+        for a in self.conn.execute(
+            "SELECT id, kind, key FROM assets WHERE target_id=? AND active=1",
+            (target_id,),
+        ):
+            nodes.append({
+                "id": a["id"], "kind": a["kind"], "key": a["key"],
+                "risk": round(risk_by_host.get(a["key"], 0), 1),
+            })
+        edges = [
+            {"source": e["src_id"], "target": e["dst_id"], "rel": e["rel"]}
+            for e in self.conn.execute(
+                "SELECT src_id, dst_id, rel FROM asset_edges WHERE target_id=?",
+                (target_id,),
+            )
+        ]
+        return {"nodes": nodes, "edges": edges}
+
+    # ------------------------------------------------------------------ #
+    # Business-context tagging & prioritisation
+    # ------------------------------------------------------------------ #
+
+    def set_tag(self, target: str, pattern: str, criticality: int = 3,
+                kind: Optional[str] = None, sensitivity: Optional[str] = None,
+                note: Optional[str] = None) -> None:
+        target_id = self.get_or_create_target(target)
+        criticality = max(1, min(5, int(criticality)))
+        self.conn.execute(
+            "INSERT INTO asset_tags(target_id, pattern, kind, criticality, "
+            "sensitivity, note, created_at) VALUES(?,?,?,?,?,?,?) "
+            "ON CONFLICT(target_id, pattern, kind) DO UPDATE SET "
+            "criticality=excluded.criticality, sensitivity=excluded.sensitivity, "
+            "note=excluded.note",
+            (target_id, pattern.strip().lower(), kind, criticality,
+             sensitivity, note, utcnow()),
+        )
+        self.conn.commit()
+
+    def list_tags(self, target: str) -> List[sqlite3.Row]:
+        target_id = self._target_id(target)
+        if target_id is None:
+            return []
+        return self.conn.execute(
+            "SELECT * FROM asset_tags WHERE target_id=? ORDER BY criticality DESC, "
+            "pattern", (target_id,),
+        ).fetchall()
+
+    def criticality_for(self, target_id: int, host: str) -> int:
+        """Best-matching tag criticality for a host (default 3 = medium)."""
+        host = (host or "").strip().lower()
+        best = 3
+        matched = False
+        for t in self.conn.execute(
+            "SELECT pattern, criticality FROM asset_tags WHERE target_id=?",
+            (target_id,),
+        ):
+            if fnmatch.fnmatch(host, t["pattern"]):
+                # Most severe matching pattern wins.
+                if not matched or t["criticality"] > best:
+                    best = t["criticality"]
+                matched = True
+        return best
+
+    def apply_business_risk(self, scan_id: int) -> None:
+        """Blend each open finding's risk with its asset's criticality."""
+        row = self.conn.execute(
+            "SELECT target_id FROM scans WHERE id=?", (scan_id,)
+        ).fetchone()
+        if row is None:
+            return
+        target_id = row["target_id"]
+        has_tags = self.conn.execute(
+            "SELECT 1 FROM asset_tags WHERE target_id=? LIMIT 1", (target_id,)
+        ).fetchone()
+        for f in self.conn.execute(
+            "SELECT id, matched_at, risk_score FROM findings WHERE target_id=?",
+            (target_id,),
+        ).fetchall():
+            if has_tags:
+                crit = self.criticality_for(target_id, _host_of(f["matched_at"]))
+            else:
+                crit = 3
+            mult = CRITICALITY_MULT.get(crit, 1.0)
+            business = round(min(100.0, (f["risk_score"] or 0) * mult), 1)
+            self.conn.execute(
+                "UPDATE findings SET business_risk=? WHERE id=?",
+                (business, f["id"]),
+            )
+        self.conn.commit()
+
+    # ------------------------------------------------------------------ #
+    # Ticketing
+    # ------------------------------------------------------------------ #
+
+    def unticketed_findings(self, target_id: int,
+                            min_rank: int) -> List[sqlite3.Row]:
+        rows = self.conn.execute(
+            "SELECT * FROM findings WHERE target_id=? AND status='open' "
+            "AND ticketed_at IS NULL", (target_id,),
+        ).fetchall()
+        return [r for r in rows if severity_rank(r["severity"]) >= min_rank]
+
+    def mark_ticketed(self, finding_id: int) -> None:
+        self.conn.execute(
+            "UPDATE findings SET ticketed_at=? WHERE id=?", (utcnow(), finding_id)
+        )
+        self.conn.commit()
+
+    # ------------------------------------------------------------------ #
     # Queries (for CLI / reporting)
     # ------------------------------------------------------------------ #
 
@@ -383,8 +600,9 @@ class Store:
         if min_severity:
             floor = severity_rank(min_severity)
             rows = [r for r in rows if severity_rank(r["severity"]) >= floor]
-        # Prioritize by blended risk score, then severity as a tiebreaker.
-        rows.sort(key=lambda r: (r["risk_score"] or 0,
+        # Prioritize by business-adjusted risk when available, then raw risk,
+        # then severity as a final tiebreaker.
+        rows.sort(key=lambda r: (r["business_risk"] or 0, r["risk_score"] or 0,
                                  severity_rank(r["severity"])), reverse=True)
         return rows
 

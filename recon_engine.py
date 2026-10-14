@@ -114,13 +114,20 @@ class ReconEngine:
                     if re.match(r"\d+\.\d+\.\d+\.\d+", i)}
 
         ips = set()
+        host_ips = {}  # subdomain -> [ips], feeds the asset-relationship graph
         with ThreadPoolExecutor(MAX_WORKERS) as exe:
-            for f in tqdm(as_completed([exe.submit(resolve, s) for s in self.subs]),
+            futures = {exe.submit(resolve, s): s for s in self.subs}
+            for f in tqdm(as_completed(futures),
                           total=len(self.subs), desc="DNS Resolution"):
-                ips |= f.result()
+                sub = futures[f]
+                resolved = f.result()
+                if resolved:
+                    host_ips[sub] = sorted(resolved)
+                ips |= resolved
 
         self.ips = sorted(ips)
         self.write(self.recon / "domain_ips.txt", "\n".join(self.ips))
+        self.write(self.recon / "host_ips.json", json.dumps(host_ips, indent=2))
 
     def alive(self):
         self.alive_domains = self.recon / "alive_domains.txt"

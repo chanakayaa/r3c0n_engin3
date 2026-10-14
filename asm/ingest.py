@@ -56,8 +56,45 @@ def ingest_results(target: str, base_dir: str) -> ScanResult:
     _ingest_nmap(scans, result)
     _ingest_nuclei(recon, scans, result)
     _ingest_security_headers(recon, result)
+    _ingest_edges(recon, result)
 
     return result
+
+
+def _ingest_edges(recon: Path, result: ScanResult) -> None:
+    """Derive asset-relationship edges from the parsed assets + host_ips.json."""
+    keys = {}
+    for a in result.assets:
+        keys.setdefault(a.kind, set()).add(a.normalized_key())
+
+    # subdomain -> ip (from the per-host DNS mapping)
+    hip = recon / "host_ips.json"
+    if hip.exists():
+        try:
+            mapping = json.loads(hip.read_text(errors="ignore"))
+        except (json.JSONDecodeError, OSError):
+            mapping = {}
+        for sub, ips in (mapping or {}).items():
+            for ip in ips or []:
+                result.add_edge(KIND_SUBDOMAIN, sub, KIND_IP, ip, "resolves_to")
+
+    # ip -> service (ip:port)
+    for svc in keys.get(KIND_SERVICE, set()):
+        ip = svc.split(":", 1)[0]
+        result.add_edge(KIND_IP, ip, KIND_SERVICE, svc, "exposes")
+
+    # host -> technology, host -> url
+    subs = keys.get(KIND_SUBDOMAIN, set())
+    urls = keys.get(KIND_URL, set())
+    for tech in keys.get(KIND_TECHNOLOGY, set()):
+        host = tech.split("|", 1)[0]
+        if host in subs:
+            result.add_edge(KIND_SUBDOMAIN, host, KIND_TECHNOLOGY, tech, "runs")
+        elif host in urls:
+            result.add_edge(KIND_URL, host, KIND_TECHNOLOGY, tech, "runs")
+    for url in urls:
+        if url in subs:
+            result.add_edge(KIND_SUBDOMAIN, url, KIND_URL, url, "http")
 
 
 def _ingest_subdomains(recon: Path, result: ScanResult) -> None:

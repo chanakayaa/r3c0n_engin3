@@ -70,6 +70,9 @@ class Finding:
     epss: Optional[float] = None         # 0..1 exploit-prediction probability
     kev: bool = False                    # on CISA Known-Exploited-Vulns list
     risk_score: float = 0.0              # 0..100 prioritization score
+    attack: List[Dict[str, str]] = field(default_factory=list)  # ATT&CK mappings
+    attack_techniques: str = ""          # comma list of technique ids, for display
+    business_risk: float = 0.0           # risk blended with asset criticality
 
     def dedupe_key(self) -> str:
         # A finding is "the same" across scans when template + location match.
@@ -96,6 +99,8 @@ class ScanResult:
     results_dir: str
     assets: List[Asset] = field(default_factory=list)
     findings: List[Finding] = field(default_factory=list)
+    # Relationship edges between assets: ((src_kind, src_key), (dst_kind, dst_key), rel)
+    edges: List[tuple] = field(default_factory=list)
     started_at: str = field(default_factory=utcnow)
     finished_at: Optional[str] = None
 
@@ -104,6 +109,13 @@ class ScanResult:
         if not key:
             return
         self.assets.append(Asset(kind=kind, key=key, data=data))
+
+    def add_edge(self, src_kind: str, src_key: str, dst_kind: str,
+                 dst_key: str, rel: str) -> None:
+        src_key = (src_key or "").strip()
+        dst_key = (dst_key or "").strip()
+        if src_key and dst_key:
+            self.edges.append(((src_kind, src_key), (dst_kind, dst_key), rel))
 
     def add_finding(self, finding: Finding) -> None:
         self.findings.append(finding)

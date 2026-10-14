@@ -32,6 +32,24 @@ def _import_recon_engine():
     return importlib.import_module("recon_engine")
 
 
+def _dispatch_tickets(store: Store, target: str, config: Config) -> None:
+    """POST each new, un-ticketed finding at/above the threshold to the webhook."""
+    from .models import severity_rank
+    from .notify import post_ticket
+    target_id = store._target_id(target)
+    if target_id is None:
+        return
+    floor = severity_rank(config.ticket_min_severity)
+    rows = store.unticketed_findings(target_id, floor)
+    sent = 0
+    for row in rows:
+        if post_ticket(config.ticket_webhook, row):
+            store.mark_ticketed(row["id"])
+            sent += 1
+    if sent:
+        print(f"[+] Dispatched {sent} finding(s) to ticket webhook")
+
+
 def run_pass(target: str, config: Config,
              notifier: Optional[Notifier] = None) -> List[Change]:
     """Execute a single ASM pass. Returns the detected changes."""
@@ -70,11 +88,26 @@ def run_pass(target: str, config: Config,
             Enricher(cache_dir=cache, offline=config.intel_offline).enrich(
                 result.findings)
 
-        # 4. Persist + diff against previous pass.
+        # 3c. MITRE ATT&CK tagging.
+        if result.findings:
+            from .attack import annotate
+            annotate(result.findings)
+
+        # 3d. Apply any business-context tags from config before persisting.
+        for tag in (config.criticality or []):
+            if tag.get("pattern"):
+                store.set_tag(target, tag["pattern"],
+                              criticality=tag.get("criticality", 3),
+                              kind=tag.get("kind"),
+                              sensitivity=tag.get("sensitivity"),
+                              note=tag.get("note"))
+
+        # 4. Persist + diff against previous pass, then blend business risk.
         store.conn.execute(
             "UPDATE scans SET results_dir=? WHERE id=?", (str(base_dir), scan_id)
         )
         changes = store.record_result(scan_id, result)
+        store.apply_business_risk(scan_id)
 
         # 5. Alert.
         new_finding_keys = {c.subject for c in changes
@@ -87,6 +120,10 @@ def run_pass(target: str, config: Config,
             slack_webhook=config.slack_webhook,
             min_severity=config.alert_min_severity,
         )).dispatch(target, changes, new_findings)
+
+        # 6. Per-finding ticket webhook (idempotent via ticketed_at).
+        if config.ticket_webhook:
+            _dispatch_tickets(store, target, config)
 
         print(f"[✓] ASM pass #{scan_id} complete: "
               f"{len(result.assets)} assets, {len(result.findings)} findings, "

@@ -114,11 +114,151 @@ def test_end_to_end_enrich_and_prioritize():
     store.close()
 
 
+# --------------------------------------------------------------------------- #
+# Extensions: ATT&CK, business-context, graph, ticketing, web UI
+# --------------------------------------------------------------------------- #
+
+def _seed_full(tmp: Path) -> tuple:
+    """Build a self-consistent results dir, ingest it, return (store, db_path)."""
+    from asm.attack import annotate
+    cache = tmp / "cache"
+    _write_cache(cache)
+    run = tmp / "run"
+    recon = run / "recon"
+    recon.mkdir(parents=True)
+    (run / "scans").mkdir(parents=True)
+    (recon / "subdomains.txt").write_text(
+        "www.demo.example.com\napp.demo.example.com\napi.demo.example.com")
+    (recon / "alive_domains.txt").write_text(
+        "https://www.demo.example.com\nhttps://app.demo.example.com\n"
+        "https://api.demo.example.com")
+    (recon / "domain_ips.txt").write_text("203.0.113.10\n203.0.113.11")
+    (recon / "host_ips.json").write_text(json.dumps({
+        "www.demo.example.com": ["203.0.113.10"],
+        "app.demo.example.com": ["203.0.113.10"],
+        "api.demo.example.com": ["203.0.113.11"]}))
+    (run / "scans" / "nmap.xml").write_text(
+        '<?xml version="1.0"?><nmaprun>'
+        '<host><address addr="203.0.113.10" addrtype="ipv4"/><ports>'
+        '<port protocol="tcp" portid="443"><state state="open"/>'
+        '<service name="https"/></port></ports></host></nmaprun>')
+    (recon / "nuclei.jsonl").write_text(json.dumps(
+        {"template-id": "CVE-2021-44228",
+         "matched-at": "https://app.demo.example.com/api",
+         "info": {"name": "Log4Shell", "severity": "critical",
+                  "tags": ["rce", "cve"]}}))
+
+    result = ingest_results(TARGET, str(run))
+    Enricher(cache_dir=cache, offline=True).enrich(result.findings)
+    annotate(result.findings)
+    store = Store(str(tmp / "ext.db"))
+    sid = store.start_scan(TARGET, str(run))
+    store.record_result(sid, result)
+    store.apply_business_risk(sid)
+    return store, sid
+
+
+def test_attack_annotation():
+    from asm.attack import annotate, map_finding
+    f = Finding("CVE-2021-44228", "Log4Shell", "critical",
+                "https://x", info={"tags": ["rce", "cve"]})
+    techs = map_finding(f)
+    assert any(t["technique_id"] == "T1203" for t in techs), techs
+    annotate([f])
+    assert "T1203" in f.attack_techniques
+
+
+def test_business_risk_blend():
+    tmp = Path(tempfile.mkdtemp())
+    store, sid = _seed_full(tmp)
+    before = {r["matched_at"]: r["business_risk"] for r in store.findings(TARGET)}
+    # Tag the app host critical and re-blend.
+    store.set_tag(TARGET, "app.*", criticality=5)
+    store.apply_business_risk(sid)
+    after = {r["matched_at"]: r["business_risk"] for r in store.findings(TARGET)}
+    key = "https://app.demo.example.com/api"
+    assert after[key] > before[key], (before[key], after[key])
+    assert after[key] >= 100 or after[key] > store.findings(TARGET)[0]["risk_score"]
+    store.close()
+
+
+def test_graph_edges():
+    tmp = Path(tempfile.mkdtemp())
+    store, _ = _seed_full(tmp)
+    g = store.graph(TARGET)
+    rels = {e["rel"] for e in g["edges"]}
+    assert {"resolves_to", "exposes", "http"} <= rels, rels
+    assert len(g["nodes"]) >= 6
+    store.close()
+
+
+def test_ticket_idempotency(monkeypatch):
+    import asm.monitor as monitor
+    import asm.notify as notify
+    tmp = Path(tempfile.mkdtemp())
+    store, _ = _seed_full(tmp)
+    calls = {"n": 0}
+    # _dispatch_tickets does `from .notify import post_ticket` at call time.
+    monkeypatch.setattr(notify, "post_ticket",
+                        lambda url, row: calls.__setitem__("n", calls["n"] + 1) or True)
+    cfg = type("C", (), {"ticket_webhook": "http://x", "ticket_min_severity": "high"})()
+    monitor._dispatch_tickets(store, TARGET, cfg)
+    first = calls["n"]
+    monitor._dispatch_tickets(store, TARGET, cfg)   # nothing new -> no posts
+    assert first >= 1 and calls["n"] == first, (first, calls["n"])
+    store.close()
+
+
+def test_webapp_smoke():
+    try:
+        from fastapi.testclient import TestClient
+    except Exception:
+        print("  skip test_webapp_smoke (fastapi not installed)")
+        return
+    tmp = Path(tempfile.mkdtemp())
+    store, _ = _seed_full(tmp)
+    db_path = store.path
+    store.close()
+    from asm import webapp
+    webapp._STATE["db"] = db_path
+    webapp._STATE["runs_dir"] = tmp / ".runs"
+    webapp._STATE["token"] = None
+    c = TestClient(webapp.app)
+    assert c.get("/").status_code == 200
+    assert c.get(f"/targets/{TARGET}").status_code == 200
+    assert len(c.get(f"/api/targets/{TARGET}/graph.json").json()["edges"]) >= 3
+    assert "Attack Surface Report" in c.get(f"/targets/{TARGET}/report").text
+
+
+def _needs_monkeypatch(fn) -> bool:
+    import inspect
+    return "monkeypatch" in inspect.signature(fn).parameters
+
+
+class _MonkeyPatch:
+    """Minimal monkeypatch for the stdlib fallback runner."""
+    def __init__(self):
+        self._undo = []
+    def setattr(self, obj, name, value):
+        self._undo.append((obj, name, getattr(obj, name)))
+        setattr(obj, name, value)
+    def undo(self):
+        for obj, name, old in reversed(self._undo):
+            setattr(obj, name, old)
+
+
 def _run_all():
     passed = 0
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
-            fn()
+            if _needs_monkeypatch(fn):
+                mp = _MonkeyPatch()
+                try:
+                    fn(mp)
+                finally:
+                    mp.undo()
+            else:
+                fn()
             print(f"  ok  {name}")
             passed += 1
     print(f"\n{passed} tests passed")

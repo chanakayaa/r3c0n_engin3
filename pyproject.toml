@@ -26,6 +26,14 @@ dependencies = [
     "tqdm>=4.66",
 ]
 
+[project.optional-dependencies]
+# Web UI (asm serve). Core ASM stays stdlib-only; install with: pip install '.[web]'
+web = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "python-multipart>=0.0.9",
+]
+
 [project.urls]
 Homepage = "https://github.com/chanakayaa/r3c0n_engin3"
 Repository = "https://github.com/chanakayaa/r3c0n_engin3"
@@ -39,3 +47,7 @@ recon-engine = "recon_engine:main"
 # `asm` can still import the recon engine.
 packages = ["asm"]
 py-modules = ["recon_engine", "report"]
+include-package-data = true
+
+[tool.setuptools.package-data]
+asm = ["data/*.json"]

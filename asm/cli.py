@@ -11,6 +11,12 @@ Subcommands
   findings  list findings for a target
   changes   show recorded changes for a target
   report    generate an ASM HTML report for a target
+  tag       tag assets with a business criticality (glob pattern)
+  tags      list business-criticality tags for a target
+  graph     export the asset-relationship graph (JSON or HTML)
+  export    export findings as JSON or CSV (ITSM/SIEM feed)
+  serve     launch the web UI (requires the [web] extra)
+  intel-update  refresh the local CISA KEV / EPSS cache
   init      write a sample config file
 
 Authorized security testing only.
@@ -19,6 +25,7 @@ Authorized security testing only.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 from pathlib import Path
@@ -120,6 +127,40 @@ def build_parser() -> argparse.ArgumentParser:
     rp.add_argument("-o", "--output", help="output html path")
     _add_common(rp)
 
+    tgp = sub.add_parser("tag", help="tag assets with business criticality")
+    tgp.add_argument("-t", "--target", required=True)
+    tgp.add_argument("--pattern", required=True,
+                     help="glob over host, e.g. '*.payments.example.com'")
+    tgp.add_argument("--criticality", type=int, default=3,
+                     choices=[1, 2, 3, 4, 5], help="1=low .. 5=critical")
+    tgp.add_argument("--kind", help="restrict to an asset kind (optional)")
+    tgp.add_argument("--sensitivity", help="e.g. pii, phi, financial")
+    tgp.add_argument("--note")
+    _add_common(tgp)
+
+    tlp = sub.add_parser("tags", help="list business-criticality tags")
+    tlp.add_argument("-t", "--target", required=True)
+    _add_common(tlp)
+
+    gp = sub.add_parser("graph", help="export the asset-relationship graph")
+    gp.add_argument("-t", "--target", required=True)
+    gp.add_argument("-o", "--output", help="output path")
+    gp.add_argument("--html", action="store_true",
+                    help="emit an interactive HTML page instead of JSON")
+    _add_common(gp)
+
+    ep = sub.add_parser("export", help="export findings (JSON or CSV)")
+    ep.add_argument("-t", "--target", required=True)
+    ep.add_argument("--format", choices=["json", "csv"], default="json")
+    ep.add_argument("-o", "--output", help="output path")
+    _add_common(ep)
+
+    svp = sub.add_parser("serve", help="launch the web UI (needs [web] extra)")
+    svp.add_argument("--host", default="127.0.0.1")
+    svp.add_argument("--port", type=int, default=8000)
+    svp.add_argument("--token", help="optional bearer token to require")
+    _add_common(svp)
+
     np = sub.add_parser("init", help="write a sample config file")
     np.add_argument("-o", "--output", default="asm.config.json")
 
@@ -163,7 +204,17 @@ def cmd_ingest(args) -> int:
             cache = Path(cfg.intel_cache_dir) if cfg.intel_cache_dir else None
             Enricher(cache_dir=cache, offline=cfg.intel_offline).enrich(
                 result.findings)
+        if result.findings:
+            from .attack import annotate
+            annotate(result.findings)
+        for tag in (cfg.criticality or []):
+            if tag.get("pattern"):
+                store.set_tag(args.target, tag["pattern"],
+                              criticality=tag.get("criticality", 3),
+                              kind=tag.get("kind"), sensitivity=tag.get("sensitivity"),
+                              note=tag.get("note"))
         changes = store.record_result(scan_id, result)
+        store.apply_business_risk(scan_id)
         print(f"[✓] Ingested {len(result.assets)} assets, "
               f"{len(result.findings)} findings, {len(changes)} changes "
               f"(scan #{scan_id})")
@@ -208,17 +259,18 @@ def cmd_findings(args) -> int:
         rows = store.findings(args.target, status=args.status,
                              min_severity=args.min_severity)
         if rows:
-            print(f"{'RISK':>5}  {'SEV':8} {'KEV':3} {'EPSS':>6}  "
-                  f"{'CVE':16} NAME @ LOCATION")
-            print("-" * 96)
+            print(f"{'BRISK':>5} {'RISK':>5}  {'SEV':8} {'KEV':3} {'EPSS':>5}  "
+                  f"{'CVE':16} {'ATT&CK':16} NAME @ LOCATION")
+            print("-" * 110)
         for r in rows:
             epss = f"{r['epss']:.2f}" if r["epss"] is not None else "  -  "
             kev = "KEV" if r["kev"] else " - "
             cve = r["cve"] or ""
-            print(f"{(r['risk_score'] or 0):>5.1f}  "
-                  f"{(r['severity'] or 'unknown').upper():8} {kev:3} {epss:>6}  "
-                  f"{cve:16} {r['name']} @ {r['matched_at']}")
-        print(f"\n{len(rows)} findings (sorted by risk score)")
+            attack = (r["attack_techniques"] or "")[:16]
+            print(f"{(r['business_risk'] or 0):>5.1f} {(r['risk_score'] or 0):>5.1f}  "
+                  f"{(r['severity'] or 'unknown').upper():8} {kev:3} {epss:>5}  "
+                  f"{cve:16} {attack:16} {r['name']} @ {r['matched_at']}")
+        print(f"\n{len(rows)} findings (sorted by business risk)")
     finally:
         store.close()
     return 0
@@ -267,6 +319,86 @@ def cmd_init(args) -> int:
     return 0
 
 
+def cmd_tag(args) -> int:
+    store = Store(_load_config(args).db)
+    try:
+        store.set_tag(args.target, args.pattern, criticality=args.criticality,
+                      kind=args.kind, sensitivity=args.sensitivity, note=args.note)
+        print(f"[✓] Tagged {args.pattern} criticality={args.criticality} "
+              f"for {args.target}")
+    finally:
+        store.close()
+    return 0
+
+
+def cmd_tags(args) -> int:
+    store = Store(_load_config(args).db)
+    try:
+        rows = store.list_tags(args.target)
+        for r in rows:
+            print(f"crit={r['criticality']}  {r['pattern']:40} "
+                  f"{(r['sensitivity'] or ''):10} {r['note'] or ''}")
+        print(f"\n{len(rows)} tags")
+    finally:
+        store.close()
+    return 0
+
+
+def cmd_graph(args) -> int:
+    from .graph import build_graph, graph_html
+    store = Store(_load_config(args).db)
+    try:
+        data = build_graph(store, args.target)
+        if args.html:
+            out = args.output or f"{args.target}_graph.html"
+            Path(out).write_text(graph_html(data, args.target))
+        else:
+            out = args.output or f"{args.target}_graph.json"
+            Path(out).write_text(json.dumps(data, indent=2))
+        print(f"[✓] Graph written: {out} "
+              f"({len(data['nodes'])} nodes, {len(data['edges'])} edges)")
+    finally:
+        store.close()
+    return 0
+
+
+def cmd_export(args) -> int:
+    store = Store(_load_config(args).db)
+    try:
+        rows = store.findings(args.target, status="open")
+        cols = ["business_risk", "risk_score", "severity", "kev", "epss", "cve",
+                "attack_techniques", "name", "matched_at", "status", "first_seen_at"]
+        if args.format == "csv":
+            import csv
+            out = args.output or f"{args.target}_findings.csv"
+            with open(out, "w", newline="") as fh:
+                w = csv.writer(fh)
+                w.writerow(cols)
+                for r in rows:
+                    w.writerow([r[c] for c in cols])
+        else:
+            out = args.output or f"{args.target}_findings.json"
+            Path(out).write_text(json.dumps(
+                [{c: r[c] for c in cols} for r in rows], indent=2))
+        print(f"[✓] Exported {len(rows)} findings: {out}")
+    finally:
+        store.close()
+    return 0
+
+
+def cmd_serve(args) -> int:
+    try:
+        from .webapp import run_server
+    except ImportError as exc:
+        print(f"[!] Web UI dependencies missing: {exc}")
+        print("    Install them with:  pip install '.[web]'")
+        return 1
+    cfg = _load_config(args)
+    run_server(cfg, host=args.host, port=args.port, token=args.token,
+               config_path=getattr(args, "config", None))
+    return 0
+
+
 _DISPATCH = {
     "scan": cmd_scan,
     "watch": cmd_watch,
@@ -277,6 +409,11 @@ _DISPATCH = {
     "changes": cmd_changes,
     "report": cmd_report,
     "intel-update": cmd_intel_update,
+    "tag": cmd_tag,
+    "tags": cmd_tags,
+    "graph": cmd_graph,
+    "export": cmd_export,
+    "serve": cmd_serve,
     "init": cmd_init,
 }
 

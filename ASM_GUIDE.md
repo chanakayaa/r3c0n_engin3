@@ -107,7 +107,81 @@ python3 asm.py <command> [options]
 | `changes` | Show recorded changes for a target |
 | `report` | Generate an ASM HTML report |
 | `intel-update` | Refresh the local CISA KEV / EPSS intel cache |
+| `tag` | Tag assets with a business criticality (glob pattern) |
+| `tags` | List business-criticality tags for a target |
+| `graph` | Export the asset-relationship graph (JSON or interactive HTML) |
+| `export` | Export findings as JSON or CSV (ITSM/SIEM feed) |
+| `serve` | Launch the web UI (needs the `[web]` extra) |
 | `init` | Write a sample config file |
+
+### Business-context prioritisation
+
+Risk from EPSS/KEV answers "how exploitable", not "how much do *we* care". Tag
+assets with a criticality (1=low .. 5=critical) and the score blends into a
+**business risk** that drives sorting everywhere (CLI, report, UI, export):
+
+```bash
+asm tag  -t example.com --pattern "*.payments.example.com" --criticality 5 --sensitivity pii
+asm tag  -t example.com --pattern "blog.example.com"       --criticality 1
+asm tags -t example.com
+```
+
+Patterns are globs matched against each finding's host. `business_risk =
+min(100, risk_score × multiplier)` with multipliers
+`{1:0.7, 2:0.85, 3:1.0, 4:1.2, 5:1.5}` (untagged hosts default to 3). You can
+also set these in the config file under `criticality`.
+
+### MITRE ATT&CK tagging
+
+Each finding is mapped to ATT&CK tactics/techniques from its nuclei tags,
+template-id, name and CWE using a bundled keyword map
+(`asm/data/attack_map.json` — extend it freely). Technique ids show in the CLI
+`findings` view, the report and the export.
+
+### Asset-relationship graph
+
+```bash
+asm graph -t example.com -o graph.json          # nodes + edges as JSON
+asm graph -t example.com --html -o graph.html   # interactive page (cytoscape)
+```
+
+Edges: `subdomain → ip` (resolves_to), `ip → service` (exposes),
+`host → technology` (runs), `subdomain → url` (http). Node size/ring reflects
+the highest risk seen on that host. This is a read-only structural map — the
+foundation for attack-path visualisation, not exploitation.
+
+### ITSM / ticket webhook
+
+Feed new findings to your own ticketing automation (section-13 integration):
+
+```json
+{ "ticket_webhook": "https://hooks.internal/asm", "ticket_min_severity": "high" }
+```
+
+Each **new** finding at or above the floor is POSTed once (flat JSON: name,
+severity, cve, epss, kev, risk, business_risk, attack techniques, location) and
+marked ticketed, so re-scans never duplicate. Point it at a Jira/ServiceNow
+bridge or a SOAR webhook.
+
+### Web UI
+
+```bash
+pip install '.[web]'
+asm serve                      # http://127.0.0.1:8000
+asm serve --host 0.0.0.0 --port 8080 --token "$(openssl rand -hex 16)"
+```
+
+Dashboard → start scans (background jobs with live logs) → per-target findings
+(by business risk), asset graph, report download, JSON/CSV export. It starts
+active scans: keep it on localhost or behind `--token` + a firewall, authorized
+targets only.
+
+### Export (SIEM/ITSM feed)
+
+```bash
+asm export -t example.com --format json -o findings.json
+asm export -t example.com --format csv  -o findings.csv
+```
 
 ### `scan`
 
@@ -183,6 +257,11 @@ python3 asm.py init -o asm.config.json
   "intel_enrich": true,
   "intel_offline": false,
   "intel_cache_dir": null,
+  "ticket_webhook": null,
+  "ticket_min_severity": "high",
+  "criticality": [
+    {"pattern": "*.payments.example.com", "criticality": 5, "sensitivity": "pii"}
+  ],
   "crawl": false,
   "dirs": false,
   "webhook": null,

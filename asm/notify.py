@@ -52,6 +52,45 @@ def summarize(target: str, changes: List[Change],
     return "\n".join(lines)
 
 
+def post_ticket(webhook: str, finding_row) -> bool:
+    """POST a single finding as a structured ticket payload. Returns success.
+
+    The payload is intentionally flat so downstream automation (SOAR / a
+    ServiceNow or Jira bridge) can map it to a ticket without parsing nuclei.
+    """
+    try:
+        attack = json.loads(finding_row["attack"]) if finding_row["attack"] else []
+    except (json.JSONDecodeError, TypeError, IndexError):
+        attack = []
+    payload = {
+        "type": "asm.finding",
+        "name": finding_row["name"],
+        "severity": finding_row["severity"],
+        "cve": finding_row["cve"],
+        "epss": finding_row["epss"],
+        "kev": bool(finding_row["kev"]),
+        "risk_score": finding_row["risk_score"],
+        "business_risk": finding_row["business_risk"],
+        "attack_techniques": finding_row["attack_techniques"],
+        "attack": attack,
+        "location": finding_row["matched_at"],
+        "first_seen_at": finding_row["first_seen_at"],
+        "template_id": finding_row["template_id"],
+    }
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        webhook, data=data, headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            resp.read()
+        return True
+    except (urllib.error.URLError, OSError) as exc:
+        print(f"[!] ticket webhook failed for '{finding_row['name']}': {exc}")
+        return False
+
+
 class Notifier:
     def __init__(self, webhook: Optional[str] = None,
                  slack_webhook: Optional[str] = None,
