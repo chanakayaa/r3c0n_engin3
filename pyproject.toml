@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "recon-engine-asm"
+version = "1.0.0"
+description = "Attack Surface Management (ASM) monitoring & vulnerability scanning framework"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Pushkar Singh" }]
+keywords = ["asm", "attack-surface-management", "recon", "vulnerability-scanner",
+            "security", "pentest", "nuclei"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: Information Technology",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Security",
+]
+
+# The ASM core (inventory, diffing, intel enrichment, alerting, reporting) is
+# standard-library only. tqdm is an optional progress-bar nicety for recon.
+dependencies = [
+    "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+# Web UI (asm serve). Core ASM stays stdlib-only; install with: pip install '.[web]'
+web = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "python-multipart>=0.0.9",
+]
+
+[project.urls]
+Homepage = "https://github.com/chanakayaa/r3c0n_engin3"
+Repository = "https://github.com/chanakayaa/r3c0n_engin3"
+
+[project.scripts]
+asm = "asm.cli:main"
+recon-engine = "recon_engine:main"
+
+[tool.setuptools]
+# Ship the asm package plus the two top-level recon modules so an installed
+# `asm` can still import the recon engine.
+packages = ["asm"]
+py-modules = ["recon_engine", "report"]
+include-package-data = true
+
+[tool.setuptools.package-data]
+asm = ["data/*.json"]
