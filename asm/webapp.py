@@ -48,83 +48,139 @@ _JOBS_LOCK = threading.Lock()
 # pulsing status, animated bars, count-up KPIs, live log.
 # --------------------------------------------------------------------------- #
 CSS = """
-:root{--bg:#0b1220;--panel:#111c30;--panel2:#0d1626;--line:#1e2d45;
---fg:#e6edf6;--muted:#8aa0bd;--accent:#38bdf8;--accent2:#818cf8;}
+:root{
+ --ink:#070a12;--ink2:#0a0f1b;--surface:rgba(255,255,255,.028);
+ --surface2:rgba(255,255,255,.045);--line:rgba(148,178,220,.12);
+ --fg:#e9f0fa;--muted:#8ba0c2;--faint:#5c6e8c;
+ --brand:#2dd4bf;--brand2:#14b8a6;--signal:#fbbf24;--danger:#fb7185;
+ --radius:18px;--shadow:0 24px 60px -24px rgba(0,0,0,.65);
+ --disp:'Sora',-apple-system,'Segoe UI',sans-serif;
+ --body:'IBM Plex Sans',-apple-system,'Segoe UI',sans-serif;
+ --mono:'JetBrains Mono',ui-monospace,'SF Mono',Menlo,monospace;}
 *{box-sizing:border-box}
-body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
-background:radial-gradient(1200px 600px at 20% -10%,#15233c 0%,var(--bg) 55%);
-color:var(--fg);min-height:100vh}
-a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
-.wrap{max-width:1100px;margin:0 auto;padding:22px}
-.top{display:flex;align-items:center;gap:14px;animation:fadeDown .5s ease both}
-.logo{font-weight:800;font-size:22px;letter-spacing:.3px;
-background:linear-gradient(90deg,var(--accent),var(--accent2),#f472b6);
--webkit-background-clip:text;background-clip:text;color:transparent;
-background-size:200% auto;animation:shine 6s linear infinite}
-.sub{color:var(--muted);font-size:12px}
-.banner{margin:14px 0;padding:9px 14px;border-radius:10px;font-size:12.5px;
-background:linear-gradient(90deg,#3b1d06,#2a1604);color:#fde3b0;
-border:1px solid #5a3410;animation:fadeUp .5s .05s ease both}
-.card{background:linear-gradient(180deg,var(--panel),var(--panel2));
-border:1px solid var(--line);border-radius:16px;padding:18px;margin:16px 0;
-box-shadow:0 10px 30px rgba(0,0,0,.25);animation:fadeUp .55s ease both}
-.card:nth-child(2){animation-delay:.05s}.card:nth-child(3){animation-delay:.1s}
-h1{margin:.2em 0}h2{color:var(--accent);margin:0 0 10px;font-size:18px}
-.kpis{display:flex;flex-wrap:wrap;gap:12px}
-.kpi{flex:1;min-width:120px;background:#0a1322;border:1px solid var(--line);
-border-radius:14px;padding:14px 16px;transition:transform .2s,box-shadow .2s}
-.kpi:hover{transform:translateY(-3px);box-shadow:0 10px 24px rgba(56,189,248,.14)}
-.kpi .n{font-size:30px;font-weight:800}.kpi .l{color:var(--muted);font-size:12px}
-.tabs{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap}
-.tab{padding:9px 16px;border-radius:10px;cursor:pointer;color:var(--muted);
-background:#0a1322;border:1px solid var(--line);transition:.2s;font-weight:600}
-.tab:hover{color:var(--fg)}.tab.active{color:#07131f;
-background:linear-gradient(90deg,var(--accent),var(--accent2));border-color:transparent}
-.pane{display:none;animation:fadeUp .4s ease both}.pane.active{display:block}
-label{display:block;color:var(--muted);font-size:12px;margin:10px 0 4px}
-input[type=text],input[type=password]{width:100%;background:#07101d;
-border:1px solid var(--line);color:var(--fg);padding:11px 12px;border-radius:10px;
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--fg);min-height:100vh;
+background:
+ radial-gradient(900px 520px at 88% -8%,rgba(45,212,191,.10),transparent 60%),
+ radial-gradient(820px 520px at -6% 8%,rgba(251,191,36,.07),transparent 55%),
+ linear-gradient(180deg,var(--ink2),var(--ink));
+background-attachment:fixed;-webkit-font-smoothing:antialiased;letter-spacing:.1px}
+/* subtle film grain for depth */
+body::after{content:"";position:fixed;inset:0;pointer-events:none;opacity:.5;z-index:0;
+background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.028'/%3E%3C/svg%3E")}
+a{color:var(--brand);text-decoration:none}a:hover{color:#5eead4}
+/* ---- product shell ---- */
+.shell{display:grid;grid-template-columns:248px 1fr;min-height:100vh;position:relative;z-index:1}
+.side{border-right:1px solid var(--line);padding:22px 18px;display:flex;flex-direction:column;
+gap:6px;position:sticky;top:0;height:100vh;background:linear-gradient(180deg,rgba(255,255,255,.02),transparent)}
+.brand{display:flex;align-items:center;gap:11px;margin-bottom:22px;animation:fadeDown .5s ease both}
+.brand .mark{width:34px;height:34px;flex:none}
+.brand .nm{font-family:var(--disp);font-weight:700;font-size:16px;line-height:1.05}
+.brand .nm span{display:block;font-family:var(--body);font-weight:500;font-size:10.5px;
+color:var(--faint);letter-spacing:1.4px;text-transform:uppercase;margin-top:3px}
+.nav{display:flex;flex-direction:column;gap:3px;margin-top:4px}
+.nav a{display:flex;align-items:center;gap:11px;padding:10px 12px;border-radius:11px;
+color:var(--muted);font-weight:500;font-size:14px;transition:.18s}
+.nav a:hover{background:var(--surface);color:var(--fg)}
+.nav a.on{background:linear-gradient(90deg,rgba(45,212,191,.16),rgba(45,212,191,.03));
+color:#7df0e0;box-shadow:inset 2px 0 0 var(--brand)}
+.nav a .i{width:17px;text-align:center;opacity:.9}
+.side .foot{margin-top:auto;font-size:11px;color:var(--faint);line-height:1.6;
+border-top:1px solid var(--line);padding-top:14px}
+.side .foot b{color:var(--muted);font-weight:600}
+.main{padding:30px 40px 60px;max-width:1120px;animation:fadeIn .5s ease both}
+.ptitle{font-family:var(--disp);font-weight:700;font-size:26px;margin:0 0 2px;
+letter-spacing:-.4px}
+.pdesc{color:var(--muted);font-size:13.5px;margin:0 0 20px}
+/* staggered reveal for main children */
+.main>.card{opacity:0;animation:rise .6s cubic-bezier(.22,1,.36,1) forwards}
+.main>.card:nth-child(1){animation-delay:.04s}.main>.card:nth-child(2){animation-delay:.12s}
+.main>.card:nth-child(3){animation-delay:.2s}.main>.card:nth-child(4){animation-delay:.28s}
+.main>.card:nth-child(5){animation-delay:.36s}
+.card{background:var(--surface);backdrop-filter:blur(8px);border:1px solid var(--line);
+border-radius:var(--radius);padding:22px;margin:0 0 20px;box-shadow:var(--shadow)}
+.card.hero{background:
+ radial-gradient(500px 240px at 100% 0,rgba(45,212,191,.10),transparent 60%),var(--surface)}
+h2{font-family:var(--disp);font-weight:600;color:var(--fg);margin:0 0 14px;font-size:16px;
+letter-spacing:-.2px}
+h2 .hint{font-family:var(--body);font-weight:400;color:var(--faint);font-size:12px;margin-left:8px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:14px}
+.kpi{background:var(--surface2);border:1px solid var(--line);border-radius:14px;padding:16px 18px;
+transition:transform .22s,box-shadow .22s,border-color .22s;position:relative;overflow:hidden}
+.kpi:hover{transform:translateY(-4px);border-color:rgba(45,212,191,.4);
+box-shadow:0 16px 34px -18px rgba(45,212,191,.5)}
+.kpi .n{font-family:var(--disp);font-size:32px;font-weight:700;line-height:1;letter-spacing:-1px}
+.kpi .l{color:var(--muted);font-size:12px;margin-top:7px}
+.kpi.crit .n{color:var(--danger)}.kpi.high .n{color:var(--signal)}.kpi.brand .n{color:var(--brand)}
+.tabs{display:flex;gap:4px;margin-bottom:18px;background:var(--ink2);border:1px solid var(--line);
+border-radius:13px;padding:5px;width:fit-content;max-width:100%;flex-wrap:wrap}
+.tab{padding:9px 18px;border-radius:9px;cursor:pointer;color:var(--muted);font-weight:600;
+font-size:13.5px;transition:.2s;white-space:nowrap}
+.tab:hover{color:var(--fg)}
+.tab.active{color:var(--ink);background:linear-gradient(135deg,var(--brand),var(--brand2));
+box-shadow:0 6px 18px -8px rgba(45,212,191,.7)}
+.pane{display:none}.pane.active{display:block;animation:rise .4s cubic-bezier(.22,1,.36,1) both}
+label{display:block;color:var(--muted);font-size:12px;margin:12px 0 5px;font-weight:500}
+input[type=text],input[type=password]{width:100%;background:var(--ink);border:1px solid var(--line);
+color:var(--fg);padding:12px 13px;border-radius:11px;font-family:var(--body);font-size:14px;
 transition:border-color .2s,box-shadow .2s}
-input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(56,189,248,.15)}
+input::placeholder{color:var(--faint)}
+input:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px rgba(45,212,191,.16)}
 .row{display:flex;gap:16px;flex-wrap:wrap}.row>div{flex:1;min-width:220px}
-.checks{display:flex;gap:16px;flex-wrap:wrap;margin:12px 0;color:var(--muted);font-size:13px}
-.checks label{display:inline-flex;align-items:center;gap:7px;margin:0;cursor:pointer}
-button{margin-top:14px;background:linear-gradient(90deg,var(--accent),var(--accent2));
-color:#07131f;border:0;padding:12px 20px;border-radius:11px;font-weight:800;
-cursor:pointer;transition:transform .12s,filter .2s;background-size:160% auto}
-button:hover{filter:brightness(1.08);transform:translateY(-1px);background-position:right center}
+.checks{display:flex;gap:18px;flex-wrap:wrap;margin:14px 0;color:var(--muted);font-size:13px}
+.checks label{display:inline-flex;align-items:center;gap:8px;margin:0;cursor:pointer}
+.checks input{accent-color:var(--brand)}
+button{margin-top:16px;background:linear-gradient(135deg,var(--brand),var(--brand2));
+color:var(--ink);border:0;padding:13px 22px;border-radius:12px;font-weight:700;font-size:14px;
+font-family:var(--disp);cursor:pointer;transition:transform .14s,box-shadow .22s;
+box-shadow:0 10px 26px -12px rgba(45,212,191,.75)}
+button:hover{transform:translateY(-2px);box-shadow:0 16px 34px -12px rgba(45,212,191,.9)}
 button:active{transform:translateY(0)}
-table{border-collapse:collapse;width:100%;background:#07101d;border-radius:12px;overflow:hidden}
-th,td{text-align:left;padding:9px 11px;border-bottom:1px solid var(--line);font-size:13.5px}
-th{background:#0d1a2e;color:#b9cbe4;font-size:12px;text-transform:uppercase;letter-spacing:.4px}
-tr{transition:background .15s}tbody tr:hover{background:#0c1830}
-.sev{font-weight:800;padding:2px 9px;border-radius:7px;font-size:11px}
-.critical{background:#7f1d1d;color:#fecaca}.high{background:#9a3412;color:#fed7aa}
-.medium{background:#854d0e;color:#fde68a}.low{background:#1e3a8a;color:#bfdbfe}
-.info,.unknown{background:#334155;color:#cbd5e1}
-.bar{height:7px;border-radius:6px;background:#0d1a2e;overflow:hidden;min-width:70px}
-.bar>i{display:block;height:100%;border-radius:6px;
-background:linear-gradient(90deg,#f472b6,#fb923c,#38bdf8);width:0;animation:grow 1s ease forwards}
-.pill{display:inline-block;background:#12233c;border:1px solid var(--line);
-border-radius:999px;padding:2px 10px;font-size:11px;color:#b9cbe4}
-.badge{display:inline-flex;align-items:center;gap:7px;padding:4px 12px;border-radius:999px;
-font-weight:700;font-size:12px}
-.badge.run{background:#0b2b3a;color:#7dd3fc}
-.badge.run .dot{width:8px;height:8px;border-radius:50%;background:#38bdf8;animation:pulse 1.1s infinite}
-.badge.ok{background:#07301f;color:#6ee7b7}.badge.fail{background:#3b0d12;color:#fca5a5}
-.spinner{width:16px;height:16px;border:2px solid #1e3a5f;border-top-color:var(--accent);
-border-radius:50%;display:inline-block;animation:spin .8s linear infinite;vertical-align:middle}
-pre{background:#060c16;color:#8ef0b8;padding:14px;border-radius:12px;overflow:auto;
-max-height:480px;font-size:12.5px;line-height:1.5;border:1px solid var(--line)}
+table{border-collapse:collapse;width:100%}
+th,td{text-align:left;padding:11px 12px;border-bottom:1px solid var(--line);font-size:13.5px}
+th{color:var(--faint);font-size:11px;text-transform:uppercase;letter-spacing:.6px;font-weight:600}
+tbody tr{transition:background .15s}tbody tr:hover{background:var(--surface)}
+td.num,.mono{font-family:var(--mono);font-size:12.5px}
+.sev{font-family:var(--disp);font-weight:700;padding:3px 10px;border-radius:7px;font-size:10.5px;
+text-transform:uppercase;letter-spacing:.4px}
+.critical{background:rgba(251,113,133,.16);color:#fda4af;border:1px solid rgba(251,113,133,.3)}
+.high{background:rgba(251,146,60,.15);color:#fdba74;border:1px solid rgba(251,146,60,.3)}
+.medium{background:rgba(251,191,36,.14);color:#fcd34d;border:1px solid rgba(251,191,36,.28)}
+.low{background:rgba(96,165,250,.14);color:#93c5fd;border:1px solid rgba(96,165,250,.28)}
+.info,.unknown{background:rgba(148,163,184,.14);color:#cbd5e1;border:1px solid rgba(148,163,184,.25)}
+.bar{height:6px;border-radius:6px;background:var(--ink);overflow:hidden;min-width:72px}
+.bar>i{display:block;height:100%;border-radius:6px;width:0;
+background:linear-gradient(90deg,var(--brand),var(--signal),var(--danger));
+animation:grow .9s cubic-bezier(.22,1,.36,1) forwards}
+.pill{display:inline-block;background:var(--surface2);border:1px solid var(--line);
+border-radius:999px;padding:3px 11px;font-size:11px;color:var(--muted);font-family:var(--mono)}
+.badge{display:inline-flex;align-items:center;gap:7px;padding:5px 13px;border-radius:999px;
+font-weight:700;font-size:12px;font-family:var(--disp)}
+.badge.run{background:rgba(45,212,191,.14);color:#5eead4}
+.badge.run .dot{width:7px;height:7px;border-radius:50%;background:var(--brand);
+box-shadow:0 0 0 0 rgba(45,212,191,.6);animation:pulse 1.4s infinite}
+.badge.ok{background:rgba(52,211,153,.14);color:#6ee7b7}
+.badge.fail{background:rgba(251,113,133,.14);color:#fda4af}
+.spinner{width:16px;height:16px;border:2px solid rgba(45,212,191,.22);border-top-color:var(--brand);
+border-radius:50%;display:inline-block;animation:spin .8s linear infinite;vertical-align:-3px}
+pre{background:var(--ink);color:#8ef0cf;padding:16px;border-radius:13px;overflow:auto;max-height:500px;
+font-family:var(--mono);font-size:12.5px;line-height:1.6;border:1px solid var(--line)}
 .muted{color:var(--muted);font-size:13px}
-.toast{position:fixed;right:18px;bottom:18px;background:#0b2b3a;color:#7dd3fc;
-padding:12px 18px;border-radius:12px;border:1px solid #155e75;animation:fadeUp .4s ease both}
-@keyframes fadeUp{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
-@keyframes fadeDown{from{opacity:0;transform:translateY(-14px)}to{opacity:1;transform:none}}
+.banner{margin:0 0 20px;padding:11px 16px;border-radius:12px;font-size:12.5px;
+background:rgba(251,191,36,.08);color:#fcd34d;border:1px solid rgba(251,191,36,.22);
+display:flex;align-items:center;gap:9px;animation:rise .5s ease both}
+.toast{position:fixed;right:22px;bottom:22px;background:rgba(45,212,191,.14);color:#5eead4;
+padding:13px 20px;border-radius:13px;border:1px solid rgba(45,212,191,.35);font-weight:600;
+backdrop-filter:blur(10px);animation:rise .4s ease both;z-index:50}
+@keyframes rise{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:none}}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+@keyframes fadeDown{from{opacity:0;transform:translateY(-12px)}to{opacity:1;transform:none}}
 @keyframes spin{to{transform:rotate(360deg)}}
-@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.7)}}
-@keyframes shine{to{background-position:200% center}}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(45,212,191,.55)}70%{box-shadow:0 0 0 7px rgba(45,212,191,0)}100%{box-shadow:0 0 0 0 rgba(45,212,191,0)}}
 @keyframes grow{from{width:0}}
+@media(max-width:820px){.shell{grid-template-columns:1fr}.side{position:static;height:auto;
+flex-direction:row;flex-wrap:wrap;align-items:center}.side .foot{display:none}
+.nav{flex-direction:row;flex-wrap:wrap}.main{padding:22px 18px}}
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 """
 
@@ -159,15 +215,47 @@ def _sev(s) -> str:
     return f"<span class='sev {s}'>{_esc(s)}</span>"
 
 
-def _page(title: str, body: str, onload: str = "") -> str:
-    return (f"<!DOCTYPE html><html><head><meta charset='utf-8'>"
+_LOGO = ("<svg class='mark' viewBox='0 0 40 40' fill='none' xmlns='http://www.w3.org/2000/svg'>"
+         "<defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'>"
+         "<stop offset='0' stop-color='#2dd4bf'/><stop offset='1' stop-color='#14b8a6'/>"
+         "</linearGradient></defs>"
+         "<path d='M20 2 L35 9 V21 C35 30 28 36 20 38 C12 36 5 30 5 21 V9 Z' "
+         "fill='url(#g)' opacity='.14' stroke='url(#g)' stroke-width='1.5'/>"
+         "<circle cx='20' cy='20' r='10' stroke='url(#g)' stroke-width='1.4' opacity='.5'/>"
+         "<circle cx='20' cy='20' r='5' stroke='url(#g)' stroke-width='1.6'/>"
+         "<circle cx='20' cy='20' r='2' fill='#2dd4bf'/>"
+         "<path d='M20 20 L31 11' stroke='#2dd4bf' stroke-width='1.6' stroke-linecap='round'/>"
+         "</svg>")
+
+_FONTS = ("<link rel='preconnect' href='https://fonts.googleapis.com'>"
+          "<link rel='preconnect' href='https://fonts.gstatic.com' crossorigin>"
+          "<link href='https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&"
+          "family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&"
+          "display=swap' rel='stylesheet'>")
+
+
+def _nav(active: str) -> str:
+    items = [("dash", "/", "◉", "Dashboard"),
+             ("scan", "/#launch", "⌖", "New scan"),
+             ("targets", "/#targets", "▤", "Targets")]
+    links = "".join(
+        f"<a href='{href}{{q}}' class='{'on' if active == key else ''}'>"
+        f"<span class='i'>{ic}</span>{label}</a>"
+        for key, href, ic, label in items)
+    return (f"<aside class='side'><div class='brand'>{_LOGO}"
+            f"<div class='nm'>ReconEngine<span>ASM · surface monitor</span></div></div>"
+            f"<nav class='nav'>{links}</nav>"
+            f"<div class='foot'><b>Localhost only.</b> This console initiates active "
+            f"scans — authorized targets only.</div></aside>")
+
+
+def _page(title: str, body: str, onload: str = "", active: str = "dash") -> str:
+    return (f"<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>"
             f"<meta name='viewport' content='width=device-width,initial-scale=1'>"
-            f"<title>{_esc(title)}</title><style>{CSS}</style></head><body>"
-            f"<div class='wrap'><div class='top'><div class='logo'>◉ ReconEngine ASM</div>"
-            f"<div class='sub'>Attack Surface Monitoring</div></div>"
-            f"<div class='banner'>⚠ Initiates active scans — authorized targets only; keep on localhost.</div>"
-            f"{body}</div><script>{JS}</script>"
-            f"<script>{onload}</script></body></html>")
+            f"<title>{_esc(title)} · ReconEngine ASM</title>{_FONTS}"
+            f"<style>{CSS}</style></head><body><div class='shell'>{_nav(active)}"
+            f"<main class='main'>{body}</main></div>"
+            f"<script>{JS}</script><script>{onload}</script></body></html>")
 
 
 # --------------------------------------------------------------------------- #
@@ -250,7 +338,10 @@ def render_dashboard() -> str:
         for j in jobs[:12]) or "<tr><td colspan=5 class='muted'>No jobs this session.</td></tr>"
 
     body = f"""
-    <div class='card'>
+    <h1 class='ptitle'>Attack Surface Console</h1>
+    <p class='pdesc'>Discover, monitor and prioritise your external attack surface — web, apps and public code.</p>
+    <div class='banner'>⚡ This console initiates active scans. Keep it on localhost; authorized targets only.</div>
+    <div class='card hero' id='launch'>
       <div class='tabs'>
         <div class='tab active' onclick="tab('p-recon',this)">\U0001f50e Recon</div>
         <div class='tab' onclick="tab('p-app',this)">\U0001f4f1 App (APK/IPA)</div>
@@ -294,12 +385,12 @@ def render_dashboard() -> str:
         <p class='muted'>Searches public GitHub code for leaked secrets &amp; back-end subdomains.</p>
       </div>
     </div>
-    <div class='card'><h2>Running / recent jobs</h2>
+    <div class='card'><h2>Scan activity <span class='hint'>this session</span></h2>
       <table><tr><th>Job</th><th>Type</th><th>Target</th><th>Status</th><th>Started</th></tr>{jrows}</table></div>
-    <div class='card'><h2>Tracked targets</h2>
+    <div class='card' id='targets'><h2>Tracked targets</h2>
       <table><tr><th>Target</th><th>Scans</th><th>Assets</th></tr>{trows}</table></div>
     """
-    return _page("ASM console", body)
+    return _page("Console", body, active="dash")
 
 
 def _badge(status: str) -> str:
@@ -324,7 +415,8 @@ def render_job(job_id: str) -> Optional[str]:
       <h2 style='margin-top:14px'>Live log</h2>
       <pre id='log'>{_esc(v['log']) or '(waiting for output…)'}</pre>
     </div>"""
-    return _page(f"Job {v['id']}", body, onload=f"pollJob('{_esc(job_id)}')")
+    return _page(f"Job {v['id']}", body, onload=f"pollJob('{_esc(job_id)}')",
+                 active="scan")
 
 
 def render_target(target: str) -> str:
@@ -379,7 +471,7 @@ def render_target(target: str) -> str:
     <div class='card'><h2>Recent changes</h2>
       <table><tr><th>When</th><th>Type</th><th>Subject</th></tr>{crows}</table></div>
     """
-    return _page(target, body)
+    return _page(target, body, active="targets")
 
 
 # --------------------------------------------------------------------------- #
