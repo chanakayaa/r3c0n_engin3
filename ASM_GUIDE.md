@@ -133,7 +133,37 @@ python3 asm.py <command> [options]
 | `tags` | List business-criticality tags for a target |
 | `graph` | Export the asset-relationship graph (JSON or interactive HTML) |
 | `export` | Export findings as JSON or CSV (ITSM/SIEM feed) |
+| `appscan` | Static-analyse an APK/IPA for secrets + hidden assets (BeVigil-style) |
 | `serve` | Launch the web UI (needs the `[web]` extra) |
+
+### Mobile app attack surface (`appscan`, BeVigil-style)
+
+A mobile app is part of the external attack surface: it ships hardcoded secrets
+and references back-end subdomains/APIs that subdomain enumeration never sees.
+`appscan` statically analyses an APK/IPA (no decompiler, no network) and folds
+what it finds into the ASM inventory:
+
+```bash
+asm appscan -t tesla.com --apk app-release.apk -o report.json
+asm appscan -t example.com --apk a.apk --ipa b.ipa     # several apps at once
+```
+
+It extracts and stores:
+
+- **Hardcoded secrets** → findings (AWS/GCP keys, Stripe/Slack/GitHub tokens,
+  Firebase keys, JWTs, private keys), mapped to ATT&CK **T1552**; severity by
+  key type (private key / Stripe live = critical).
+- **Cloud storage references** (S3 / GCS / Azure Blob / Firebase) → medium
+  exposure findings + url assets.
+- **In-scope subdomains** discovered in the app → tracked `subdomain` assets
+  (they show up in the inventory, graph and future scan diffs).
+- **URLs / API endpoints** → `url` assets.
+- **Third-party trackers/SDKs** → info findings; **permissions** → metadata.
+
+Findings are risk-scored and prioritised exactly like recon findings, so an app
+secret leak surfaces at the top alongside everything else. This is read-only
+static analysis of a file you supply — download the APK/IPA yourself, only for
+apps in scope.
 | `init` | Write a sample config file |
 
 ### Business-context prioritisation

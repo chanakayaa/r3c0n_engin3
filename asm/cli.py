@@ -15,6 +15,7 @@ Subcommands
   tags      list business-criticality tags for a target
   graph     export the asset-relationship graph (JSON or HTML)
   export    export findings as JSON or CSV (ITSM/SIEM feed)
+  appscan   static-analyse an APK/IPA for secrets + hidden assets
   serve     launch the web UI (requires the [web] extra)
   intel-update  refresh the local CISA KEV / EPSS cache
   init      write a sample config file
@@ -154,6 +155,17 @@ def build_parser() -> argparse.ArgumentParser:
     ep.add_argument("--format", choices=["json", "csv"], default="json")
     ep.add_argument("-o", "--output", help="output path")
     _add_common(ep)
+
+    asp = sub.add_parser("appscan",
+                         help="static-analyse an APK/IPA for secrets + assets")
+    asp.add_argument("-t", "--target", required=True,
+                     help="root domain to fold discovered assets into")
+    asp.add_argument("--apk", action="append", help="APK file (repeatable)")
+    asp.add_argument("--ipa", action="append", help="IPA file (repeatable)")
+    asp.add_argument("-o", "--out", help="write BeVigil-style JSON report")
+    asp.add_argument("--no-intel", action="store_true")
+    asp.add_argument("--offline", action="store_true")
+    _add_common(asp)
 
     svp = sub.add_parser("serve", help="launch the web UI (needs [web] extra)")
     svp.add_argument("--host", default="127.0.0.1")
@@ -386,6 +398,52 @@ def cmd_export(args) -> int:
     return 0
 
 
+def cmd_appscan(args) -> int:
+    from .appscan import scan_app, to_scan_result
+    cfg = _load_config(args)
+    paths = (args.apk or []) + (args.ipa or [])
+    if not paths:
+        print("[!] provide at least one --apk or --ipa file")
+        return 1
+    store = Store(cfg.db)
+    try:
+        total_secrets = total_subs = 0
+        combined = {}
+        for path in paths:
+            print(f"[+] Analysing {path}")
+            scan = scan_app(path, target=args.target)
+            if scan.get("error"):
+                print(f"[!] {path}: {scan['error']}")
+                continue
+            combined[path] = scan
+            result = to_scan_result(scan, args.target)
+            if cfg.intel_enrich and result.findings:
+                from .intel import Enricher
+                cache = Path(cfg.intel_cache_dir) if cfg.intel_cache_dir else None
+                Enricher(cache_dir=cache, offline=cfg.intel_offline).enrich(
+                    result.findings)
+            from .attack import annotate
+            annotate(result.findings)
+            scan_id = store.start_scan(args.target, results_dir=f"appscan:{path}")
+            store.record_result(scan_id, result)
+            store.apply_business_risk(scan_id)
+            total_secrets += len(scan.get("secrets", []))
+            total_subs += len(scan.get("subdomains", []))
+            print(f"    secrets={len(scan.get('secrets', []))} "
+                  f"buckets={len(scan.get('buckets', []))} "
+                  f"subdomains={len(scan.get('subdomains', []))} "
+                  f"urls={len(scan.get('urls', []))} "
+                  f"trackers={len(scan.get('trackers', []))}")
+        print(f"\n[✓] App scan complete: {total_secrets} secrets, "
+              f"{total_subs} in-scope subdomains folded into {args.target}")
+        if args.out:
+            Path(args.out).write_text(json.dumps(combined, indent=2))
+            print(f"[✓] BeVigil-style JSON written: {args.out}")
+    finally:
+        store.close()
+    return 0
+
+
 def cmd_serve(args) -> int:
     try:
         from .webapp import run_server
@@ -413,6 +471,7 @@ _DISPATCH = {
     "tags": cmd_tags,
     "graph": cmd_graph,
     "export": cmd_export,
+    "appscan": cmd_appscan,
     "serve": cmd_serve,
     "init": cmd_init,
 }

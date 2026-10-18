@@ -58,6 +58,7 @@ The ASM layer (`asm.py`) adds the "monitoring" half of the tool on top of recon:
 * **Business-context prioritisation** — tag assets with a criticality (`asm tag`) and the risk score blends into a **business risk** that ranks what matters to *you*, not just raw CVSS/EPSS.
 * **Asset-relationship graph** — a read-only map (subdomain → IP → service → technology) exported as JSON or an interactive HTML page; the foundation for attack-surface/path visualisation.
 * **ITSM feed** — POST each new finding (above a severity floor) to a generic ticket webhook your SOAR/Jira/ServiceNow bridge consumes; idempotent, one ticket per finding.
+* **Mobile app attack surface (BeVigil-style)** — `asm appscan` statically analyses an APK/IPA for hardcoded secrets (keys/tokens/private keys), cloud buckets, and back-end subdomains/endpoints, folding the discovered assets into the ASM inventory and the secrets into prioritised findings.
 * **Web UI** — a FastAPI console to start scans, watch live status/logs, browse prioritised findings, view the graph and download reports (`asm serve`).
 
 ### Web UI

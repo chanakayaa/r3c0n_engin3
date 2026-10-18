@@ -249,6 +249,33 @@ def test_ingest_merges_takeover_and_exposures():
     assert len(res.findings) == 3, [f.template_id for f in res.findings]
 
 
+def test_appscan_extracts_secrets_and_assets():
+    import zipfile
+    from asm.appscan import scan_app, to_scan_result
+    tmp = Path(tempfile.mkdtemp())
+    apk = tmp / "app.apk"
+    dex = (b"AKIAIOSFODNN7EXAMPLE sk_live_" + b"a" * 24 + b" "
+           b"-----BEGIN RSA PRIVATE KEY----- "
+           b"https://api.demo.example.com/v1 https://ext.other.com/x "
+           b"assets.s3.amazonaws.com com.appsflyer.Lib")
+    with zipfile.ZipFile(apk, "w") as z:
+        z.writestr("classes.dex", dex)
+        z.writestr("AndroidManifest.xml", b"android.permission.INTERNET")
+    scan = scan_app(str(apk), target="demo.example.com")
+    types = {s["type"] for s in scan["secrets"]}
+    assert "AWS Access Key ID" in types and "Private Key" in types, types
+    assert "api.demo.example.com" in scan["subdomains"]
+    assert any("s3.amazonaws.com" in b["ref"] for b in scan["buckets"])
+    assert "AppsFlyer" in scan["trackers"]
+
+    res = to_scan_result(scan, "demo.example.com")
+    # discovered in-scope subdomain becomes a tracked asset
+    assert any(a.kind == "subdomain" and a.key == "api.demo.example.com"
+               for a in res.assets)
+    # a secret becomes a finding
+    assert any("Hardcoded secret" in f.name for f in res.findings)
+
+
 def test_webapp_smoke():
     try:
         from fastapi.testclient import TestClient
