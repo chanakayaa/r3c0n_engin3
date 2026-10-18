@@ -203,16 +203,20 @@ async function tick(){try{const r=await fetch('/api/jobs/'+id+location.search);c
  if(j.status!=='running'){document.getElementById('spin')?.remove();
   const link=document.getElementById('resultlink');if(link)link.style.display='inline';return;}
  }catch(e){}setTimeout(tick,2000);}tick();}
+function scanBadge(s){return s==='running'?"<span class='badge run'><span class=dot></span>running</span>":
+ (s==='completed'?"<span class='badge ok'>completed</span>":"<span class='badge fail'>"+s+"</span>");}
 function pollScans(){const tb=document.getElementById('scanrows');if(!tb)return;
-async function tick(){try{const r=await fetch('/api/v1/jobs'+location.search);const js=await r.json();
- if(!js.length){tb.innerHTML="<tr><td colspan=5 class=muted>No scans this session.</td></tr>";}
- else{tb.innerHTML=js.map(j=>{const b=j.status==='running'?"<span class='badge run'><span class=dot></span>running</span>":
-  (j.status==='completed'?"<span class='badge ok'>completed</span>":"<span class='badge fail'>failed</span>");
-  const bar=j.status==='running'?"<div class='bar'><i style='width:100%;animation:none'></i></div>":"";
-  return `<tr><td><a href='/jobs/${j.id}${location.search}'>${j.id}</a></td>`+
-   `<td><span class=pill>${j.kind}</span></td><td>${j.target}</td><td>${b}${bar}</td>`+
-   `<td class=muted>${j.started}</td></tr>`;}).join('');}
- }catch(e){}setTimeout(tick,2000);}tick();}
+async function tick(){try{const r=await fetch('/api/v1/scans'+location.search);const js=await r.json();
+ if(!js.length){tb.innerHTML="<tr><td colspan=7 class=muted>No scans yet — start one from the dashboard.</td></tr>";}
+ else{tb.innerHTML=js.map(s=>{const bar=s.status==='running'?"<div class='bar' style='margin-top:5px'><i style='width:100%'></i></div>":"";
+  const fin=s.finished_at?String(s.finished_at).replace('T',' ').slice(0,19):'—';
+  return `<tr><td class=num>#${s.id}</td>`+
+   `<td><a href='/targets/${encodeURIComponent(s.target)}${location.search}'>${s.target}</a></td>`+
+   `<td>${scanBadge(s.status)}${bar}</td><td class=num>${s.asset_count}</td>`+
+   `<td class=num>${s.finding_count}</td>`+
+   `<td class=muted>${String(s.started_at).replace('T',' ').slice(0,19)}</td>`+
+   `<td class=muted>${fin}</td></tr>`;}).join('');}
+ }catch(e){}setTimeout(tick,2500);}tick();}
 """
 
 
@@ -332,21 +336,21 @@ def render_dashboard() -> str:
     store = _store()
     try:
         targets = store.list_targets()
+        recent = store.recent_scans(limit=12)
     finally:
         store.close()
-    with _JOBS_LOCK:
-        jobs = sorted((_job_view(j) for j in _JOBS.values()),
-                      key=lambda j: j["started"], reverse=True)
 
     trows = "".join(
         f"<tr><td><a href='/targets/{_esc(t['name'])}{{q}}'>{_esc(t['name'])}</a></td>"
         f"<td>{t['scans']}</td><td>{t['active_assets']}</td></tr>"
         for t in targets) or "<tr><td colspan=3 class='muted'>No targets yet — run a scan.</td></tr>"
     jrows = "".join(
-        f"<tr><td><a href='/jobs/{j['id']}{{q}}'>{j['id']}</a></td>"
-        f"<td><span class='pill'>{_esc(j['kind'])}</span></td><td>{_esc(j['target'])}</td>"
-        f"<td>{_badge(j['status'])}</td><td class='muted'>{_esc(j['started'])}</td></tr>"
-        for j in jobs[:12]) or "<tr><td colspan=5 class='muted'>No jobs this session.</td></tr>"
+        f"<tr><td class='num'>#{s['id']}</td>"
+        f"<td><a href='/targets/{_esc(s['target'])}{{q}}'>{_esc(s['target'])}</a></td>"
+        f"<td>{_badge(s['status'])}</td><td class='num'>{s['asset_count']}</td>"
+        f"<td class='num'>{s['finding_count']}</td>"
+        f"<td class='muted'>{_esc(str(s['started_at']).replace('T',' ')[:19])}</td></tr>"
+        for s in recent) or "<tr><td colspan=6 class='muted'>No scans yet.</td></tr>"
 
     body = f"""
     <h1 class='ptitle'>Attack Surface Console</h1>
@@ -396,8 +400,8 @@ def render_dashboard() -> str:
         <p class='muted'>Searches public GitHub code for leaked secrets &amp; back-end subdomains.</p>
       </div>
     </div>
-    <div class='card'><h2>Scan activity <span class='hint'>this session</span></h2>
-      <table><tr><th>Job</th><th>Type</th><th>Target</th><th>Status</th><th>Started</th></tr>{jrows}</table></div>
+    <div class='card'><h2>Scan activity <span class='hint'><a href='/scans{{q}}'>live tracker →</a></span></h2>
+      <table><tr><th>#</th><th>Target</th><th>Status</th><th>Assets</th><th>Findings</th><th>Started</th></tr>{jrows}</table></div>
     <div class='card' id='targets'><h2>Tracked targets</h2>
       <table><tr><th>Target</th><th>Scans</th><th>Assets</th></tr>{trows}</table></div>
     """
@@ -408,9 +412,10 @@ def render_scans() -> str:
     body = """
     <h1 class='ptitle'>Live scan tracker</h1>
     <p class='pdesc'>Real-time status of recon, app and code-leak jobs this session.</p>
-    <div class='card'><h2>Scans <span class='hint'>auto-refreshing</span></h2>
-      <table><tr><th>Job</th><th>Type</th><th>Target</th><th>Status</th><th>Started</th></tr>
-      <tbody id='scanrows'><tr><td colspan=5 class='muted'>Loading…</td></tr></tbody></table></div>
+    <div class='card'><h2>Scans <span class='hint'>auto-refreshing · all targets</span></h2>
+      <table><tr><th>#</th><th>Target</th><th>Status</th><th>Assets</th><th>Findings</th>
+      <th>Started</th><th>Finished</th></tr>
+      <tbody id='scanrows'><tr><td colspan=7 class='muted'>Loading…</td></tr></tbody></table></div>
     """
     return _page("Live scans", body, onload="pollScans()", active="scans")
 
@@ -442,7 +447,6 @@ def render_job(job_id: str) -> Optional[str]:
 
 
 def render_target(target: str) -> str:
-    from .compliance import evaluate_all
     from .techstack import tech_inventory
     store = _store()
     try:
@@ -450,7 +454,6 @@ def render_target(target: str) -> str:
         assets = store.assets(target, active_only=True)
         changes = store.changes_since(target, limit=40)
         latest = store.latest_scan(target)
-        compliance = evaluate_all(store, target)
         tech = tech_inventory(store, target)
     finally:
         store.close()
@@ -475,29 +478,6 @@ def render_target(target: str) -> str:
                if latest else "no completed scans")
     crit = sum(1 for f in findings if (f["severity"] or "").lower() == "critical")
     high = sum(1 for f in findings if (f["severity"] or "").lower() == "high")
-
-    # Compliance posture cards (ISO 27001 + DPDP)
-    _ic = {"pass": "✅", "partial": "➖", "fail": "❌", "manual": "✋"}
-    comp_cards = ""
-    for fw in compliance.values():
-        sc = fw["score"]
-        col = "#34d399" if sc >= 75 else ("#fbbf24" if sc >= 50 else "#fb7185")
-        rows = "".join(
-            f"<tr><td>{_ic[c['status']]}</td><td class='mono'>{_esc(c['id'])}</td>"
-            f"<td>{_esc(c['title'])}<div class='muted' style='font-size:12px'>"
-            f"{_esc(c['evidence'])}</div><div class='muted' style='font-size:11.5px'>"
-            f"↳ how: {_esc(c['how'])}</div></td></tr>"
-            for c in fw["controls"])
-        cc = fw["counts"]
-        comp_cards += (
-            f"<div class='card'><h2>{_esc(fw['name'])}</h2>"
-            f"<div style='display:flex;align-items:center;gap:18px;margin-bottom:12px'>"
-            f"<div style='font-family:var(--disp);font-size:40px;font-weight:700;color:{col}'>{sc}%</div>"
-            f"<div class='muted'>assessed {fw['assessed']} · "
-            f"✅ {cc['pass']} · ➖ {cc['partial']} · ❌ {cc['fail']} "
-            f"· ✋ {cc['manual']} manual</div></div>"
-            f"<details><summary class='muted' style='cursor:pointer'>Control detail</summary>"
-            f"<table>{rows}</table></details></div>")
 
     trows = "".join(
         f"<tr><td class='num'>{t['count']}</td><td>{_esc(t['technology'])}</td>"
@@ -524,9 +504,6 @@ def render_target(target: str) -> str:
       <table><tr><th>Kind</th><th>Asset</th><th>Source</th></tr>{arows}</table></div>
     <div class='card'><h2>Technology stack <span class='hint'>CVE watch via <code>asm techstack --cve</code></span></h2>
       <table><tr><th>Hosts</th><th>Technology</th><th>Seen on</th></tr>{trows}</table></div>
-    <h2 class='ptitle' style='font-size:20px;margin:24px 0 2px'>Compliance posture</h2>
-    <p class='pdesc'>Auto-assessed from external signals. Manual controls need internal attestation — this is a posture indicator, not a certification.</p>
-    {comp_cards}
     <div class='card'><h2>Recent changes</h2>
       <table><tr><th>When</th><th>Type</th><th>Subject</th></tr>{crows}</table></div>
     """
@@ -591,6 +568,13 @@ class Handler(BaseHTTPRequestHandler):
                 jobs = [_job_view(j) for j in _JOBS.values()]
             jobs.sort(key=lambda j: j["started"], reverse=True)
             return self._send(200, json.dumps(jobs), "application/json")
+        if path == "/api/v1/scans":
+            s = _store()
+            try:
+                return self._send(200, json.dumps([dict(r) for r in s.recent_scans()]),
+                                  "application/json")
+            finally:
+                s.close()
         m = re.match(r"^/jobs/([0-9a-f]{6,})$", path)
         if m:
             page = render_job(m.group(1))
@@ -649,15 +633,6 @@ class Handler(BaseHTTPRequestHandler):
             finally:
                 s.close()
             return self._send(200, json.dumps(data), "application/json")
-        m = re.match(r"^/api/v1/targets/([^/]+)/compliance$", path)
-        if m:
-            from .compliance import evaluate_all
-            t = urllib.parse.unquote(m.group(1))
-            s = _store()
-            try:
-                return self._send(200, json.dumps(evaluate_all(s, t)), "application/json")
-            finally:
-                s.close()
         m = re.match(r"^/api/v1/targets/([^/]+)/techstack$", path)
         if m:
             from .techstack import tech_inventory

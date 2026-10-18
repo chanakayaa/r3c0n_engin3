@@ -315,25 +315,6 @@ def test_correlation_chains():
     store.close()
 
 
-def test_compliance_scoring():
-    from asm.compliance import evaluate, evaluate_all
-    tmp = Path(tempfile.mkdtemp())
-    r = ScanResult(TARGET, str(tmp))
-    r.add_finding(Finding("appsec-secret-aws", "Hardcoded secret in app: AWS Access Key ID",
-                          "high", "app.apk", info={"tags": ["secret", "credential"]}))
-    store = Store(str(tmp / "comp.db"))
-    sid = store.start_scan(TARGET)
-    store.record_result(sid, r)
-    store.apply_business_risk(sid)
-    dpdp = evaluate(store, TARGET, "dpdp")
-    assert 0 <= dpdp["score"] <= 100
-    byid = {c["id"]: c for c in dpdp["controls"]}
-    assert byid["DPDP-LEAK"]["status"] == "fail"       # leaked secret fails data leakage
-    assert byid["DPDP-5"]["status"] == "manual"        # consent is manual
-    assert "iso27001" in evaluate_all(store, TARGET)
-    store.close()
-
-
 def test_techstack_inventory():
     from asm.techstack import tech_inventory
     from asm.models import KIND_TECHNOLOGY

@@ -18,7 +18,6 @@ Subcommands
   appscan   static-analyse an APK/IPA for secrets + hidden assets
   codescan  search public GitHub code for leaked secrets
   correlate derive attack-chain findings from the inventory
-  compliance ISO 27001 / DPDP posture score with per-control evidence
   techstack technology inventory + published-CVE watch
   serve     launch the web UI + REST API (pure stdlib, no dependencies)
   intel-update  refresh the local CISA KEV / EPSS cache
@@ -175,13 +174,6 @@ def build_parser() -> argparse.ArgumentParser:
                           help="derive attack-chain findings from the inventory")
     corp.add_argument("-t", "--target", required=True)
     _add_common(corp)
-
-    cmp = sub.add_parser("compliance",
-                         help="ISO 27001 / DPDP compliance posture + score")
-    cmp.add_argument("-t", "--target", required=True)
-    cmp.add_argument("--framework", choices=["iso27001", "dpdp", "all"], default="all")
-    cmp.add_argument("-o", "--output", dest="out", help="write JSON report")
-    _add_common(cmp)
 
     tsp = sub.add_parser("techstack",
                          help="technology inventory + published-CVE watch")
@@ -525,34 +517,6 @@ def cmd_codescan(args) -> int:
     return 0
 
 
-def cmd_compliance(args) -> int:
-    from .compliance import evaluate, evaluate_all, FRAMEWORKS
-    store = Store(_load_config(args).db)
-    try:
-        if args.framework == "all":
-            results = evaluate_all(store, args.target)
-        else:
-            results = {args.framework: evaluate(store, args.target, args.framework)}
-        for fw in results.values():
-            c = fw["counts"]
-            print(f"\n=== {fw['name']} ===")
-            print(f"Compliance score: {fw['score']}%  "
-                  f"(assessed {fw['assessed']}; pass {c['pass']} / "
-                  f"partial {c['partial']} / fail {c['fail']} / manual {c['manual']})")
-            print("-" * 96)
-            icon = {"pass": "✅", "partial": "➖", "fail": "❌",
-                    "manual": "✋"}
-            for ctrl in fw["controls"]:
-                print(f"{icon[ctrl['status']]} {ctrl['id']:14} {ctrl['title']}")
-                print(f"     evidence: {ctrl['evidence']}")
-        if args.out:
-            Path(args.out).write_text(json.dumps(results, indent=2))
-            print(f"\n[✓] JSON written: {args.out}")
-    finally:
-        store.close()
-    return 0
-
-
 def cmd_techstack(args) -> int:
     from .techstack import stack_with_cves
     cfg = _load_config(args)
@@ -598,7 +562,6 @@ _DISPATCH = {
     "appscan": cmd_appscan,
     "codescan": cmd_codescan,
     "correlate": cmd_correlate,
-    "compliance": cmd_compliance,
     "techstack": cmd_techstack,
     "serve": cmd_serve,
     "init": cmd_init,

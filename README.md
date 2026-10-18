@@ -61,7 +61,6 @@ The ASM layer (`asm.py`) adds the "monitoring" half of the tool on top of recon:
 * **Mobile app attack surface (BeVigil-style)** — `asm appscan` statically analyses an APK/IPA for hardcoded secrets (keys/tokens/private keys), cloud buckets, and back-end subdomains/endpoints, folding the discovered assets into the ASM inventory and the secrets into prioritised findings.
 * **Public code secret leaks** — `asm codescan` searches public GitHub code for the target's leaked secrets and back-end subdomains (needs a GitHub token), folding them into the inventory.
 * **Attack-path correlation** — `asm correlate` chains individual signals into exploit paths (leaked key + exposed bucket = exfiltration; `.git` on a live host = source disclosure; DB port + default login = breach), elevated above single findings.
-* **Compliance posture — ISO 27001 + DPDP** — `asm compliance` scores each framework from the observed attack surface; per control it shows the control point, how to achieve it, and the evidence the tool found (policy controls flagged for manual attestation). A posture indicator, not a certification.
 * **Tech-stack monitoring** — `asm techstack` inventories every fingerprinted technology across the surface and (online) watches NVD for newly published CVEs affecting them.
 * **Live scan tracker** — a real-time, auto-refreshing view of running recon/app/code jobs in the web UI.
 * **REST API + Docker** — a versioned JSON API (`/api/v1/...`) for SIEM/SOAR/CI integration, and an all-in-one Docker image that bundles the scanning toolchain.

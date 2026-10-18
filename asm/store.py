@@ -666,6 +666,16 @@ class Store:
             (target_id, limit),
         ).fetchall()
 
+    def recent_scans(self, limit: int = 50) -> List[sqlite3.Row]:
+        """All scans across targets, newest first — drives the live tracker."""
+        return self.conn.execute(
+            "SELECT s.id, t.name AS target, s.status, s.started_at, s.finished_at, "
+            "s.asset_count, s.finding_count "
+            "FROM scans s JOIN targets t ON t.id = s.target_id "
+            "ORDER BY s.id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+
     def _target_id(self, target: str) -> Optional[int]:
         row = self.conn.execute(
             "SELECT id FROM targets WHERE name=?", (target.strip().lower(),)
