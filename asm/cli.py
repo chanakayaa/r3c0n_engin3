@@ -16,7 +16,8 @@ Subcommands
   graph     export the asset-relationship graph (JSON or HTML)
   export    export findings as JSON or CSV (ITSM/SIEM feed)
   appscan   static-analyse an APK/IPA for secrets + hidden assets
-  serve     launch the web UI (requires the [web] extra)
+  codescan  search public GitHub code for leaked secrets
+  serve     launch the web UI (pure stdlib, no dependencies)
   intel-update  refresh the local CISA KEV / EPSS cache
   init      write a sample config file
 
@@ -167,7 +168,18 @@ def build_parser() -> argparse.ArgumentParser:
     asp.add_argument("--offline", action="store_true")
     _add_common(asp)
 
-    svp = sub.add_parser("serve", help="launch the web UI (needs [web] extra)")
+    csp = sub.add_parser("codescan",
+                         help="search public GitHub code for leaked secrets")
+    csp.add_argument("-t", "--target", required=True)
+    csp.add_argument("--github-token", help="GitHub token (or GITHUB_TOKEN env)")
+    csp.add_argument("--org", help="limit search to a GitHub org")
+    csp.add_argument("--max-files", type=int, default=30)
+    csp.add_argument("-o", "--out", help="write JSON report")
+    csp.add_argument("--no-intel", action="store_true")
+    csp.add_argument("--offline", action="store_true")
+    _add_common(csp)
+
+    svp = sub.add_parser("serve", help="launch the stdlib web UI (no deps)")
     svp.add_argument("--host", default="127.0.0.1")
     svp.add_argument("--port", type=int, default=8000)
     svp.add_argument("--token", help="optional bearer token to require")
@@ -444,13 +456,39 @@ def cmd_appscan(args) -> int:
     return 0
 
 
-def cmd_serve(args) -> int:
+def cmd_codescan(args) -> int:
+    from .codescan import scan_github, to_scan_result
+    cfg = _load_config(args)
+    store = Store(cfg.db)
     try:
-        from .webapp import run_server
-    except ImportError as exc:
-        print(f"[!] Web UI dependencies missing: {exc}")
-        print("    Install them with:  pip install '.[web]'")
-        return 1
+        scan = scan_github(args.target, token=args.github_token, org=args.org,
+                           max_files=args.max_files)
+        if scan.get("error"):
+            print(f"[!] {scan['error']}")
+            return 1
+        result = to_scan_result(scan, args.target)
+        if cfg.intel_enrich and result.findings:
+            from .intel import Enricher
+            cache = Path(cfg.intel_cache_dir) if cfg.intel_cache_dir else None
+            Enricher(cache_dir=cache, offline=cfg.intel_offline).enrich(result.findings)
+        from .attack import annotate
+        annotate(result.findings)
+        scan_id = store.start_scan(args.target, results_dir="codescan:github")
+        store.record_result(scan_id, result)
+        store.apply_business_risk(scan_id)
+        print(f"[✓] Code-leak scan: {len(scan.get('secrets', []))} secrets, "
+              f"{len(scan.get('subdomains', []))} subdomains across "
+              f"{len(scan.get('files', []))} files")
+        if args.out:
+            Path(args.out).write_text(json.dumps(scan, indent=2))
+            print(f"[✓] JSON written: {args.out}")
+    finally:
+        store.close()
+    return 0
+
+
+def cmd_serve(args) -> int:
+    from .webapp import run_server  # pure stdlib, no extra deps
     cfg = _load_config(args)
     run_server(cfg, host=args.host, port=args.port, token=args.token,
                config_path=getattr(args, "config", None))
@@ -472,6 +510,7 @@ _DISPATCH = {
     "graph": cmd_graph,
     "export": cmd_export,
     "appscan": cmd_appscan,
+    "codescan": cmd_codescan,
     "serve": cmd_serve,
     "init": cmd_init,
 }

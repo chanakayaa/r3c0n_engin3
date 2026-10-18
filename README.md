@@ -59,19 +59,24 @@ The ASM layer (`asm.py`) adds the "monitoring" half of the tool on top of recon:
 * **Asset-relationship graph** — a read-only map (subdomain → IP → service → technology) exported as JSON or an interactive HTML page; the foundation for attack-surface/path visualisation.
 * **ITSM feed** — POST each new finding (above a severity floor) to a generic ticket webhook your SOAR/Jira/ServiceNow bridge consumes; idempotent, one ticket per finding.
 * **Mobile app attack surface (BeVigil-style)** — `asm appscan` statically analyses an APK/IPA for hardcoded secrets (keys/tokens/private keys), cloud buckets, and back-end subdomains/endpoints, folding the discovered assets into the ASM inventory and the secrets into prioritised findings.
-* **Web UI** — a FastAPI console to start scans, watch live status/logs, browse prioritised findings, view the graph and download reports (`asm serve`).
+* **Public code secret leaks** — `asm codescan` searches public GitHub code for the target's leaked secrets and back-end subdomains (needs a GitHub token), folding them into the inventory.
+* **Web UI** — a polished, animated console (`asm serve`) to launch **every** scan type (recon / app / code), watch live job logs, browse prioritised findings, view the asset graph and download reports. **Pure standard library — no pip install, runs on any Python 3.9+.**
 
 ### Web UI
 
+No install needed — the UI is pure standard library:
+
 ```bash
-pip install '.[web]'          # optional extra (FastAPI + uvicorn)
 asm serve                     # http://127.0.0.1:8000  (localhost-only)
 asm serve --host 0.0.0.0 --port 8080 --token "$(openssl rand -hex 16)"
+# or, without installing the package at all:
+python -m asm serve
 ```
 
-The console lists tracked targets, starts scans as background jobs (with a live
-log tail), and links to each target's prioritised findings, asset graph, report
-download and JSON/CSV export. It **initiates active scans**, so keep it bound to
+The animated console launches **every** scan type from the browser — Recon,
+App (APK/IPA), and Code leaks — as background jobs with a live-streaming log,
+and links to each target's prioritised findings, asset graph, report download
+and JSON/CSV export. It **initiates active scans**, so keep it bound to
 localhost (or behind `--token` + a firewall) and use it only against authorized
 targets.
 * **Alerting** — new assets and new findings can be pushed to a generic JSON webhook or a Slack incoming webhook, with a configurable severity floor.

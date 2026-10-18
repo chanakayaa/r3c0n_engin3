@@ -26,13 +26,8 @@ dependencies = [
     "tqdm>=4.66",
 ]
 
-[project.optional-dependencies]
-# Web UI (asm serve). Core ASM stays stdlib-only; install with: pip install '.[web]'
-web = [
-    "fastapi>=0.110",
-    "uvicorn[standard]>=0.29",
-    "python-multipart>=0.0.9",
-]
+# No optional extras: the whole tool, web UI included, is standard-library only
+# (tqdm is the single dependency, just for recon progress bars).
 
 [project.urls]
 Homepage = "https://github.com/chanakayaa/r3c0n_engin3"

@@ -276,25 +276,49 @@ def test_appscan_extracts_secrets_and_assets():
     assert any("Hardcoded secret" in f.name for f in res.findings)
 
 
+def test_codescan_parsing():
+    from asm.codescan import to_scan_result
+    scan = {"target": "demo.example.com",
+            "secrets": [{"type": "AWS Access Key ID", "severity": "high",
+                         "value": "AKIAEXAMPLE", "location": "acme/app/config.js"}],
+            "buckets": [{"type": "AWS S3 bucket", "ref": "a.s3.amazonaws.com"}],
+            "subdomains": ["api.demo.example.com"], "urls": [], "files": ["acme/app/config.js"]}
+    res = to_scan_result(scan, "demo.example.com")
+    assert any(a.kind == "subdomain" and a.key == "api.demo.example.com" for a in res.assets)
+    f = next(f for f in res.findings if "Leaked secret" in f.name)
+    assert f.severity == "high" and f.matched_at == "acme/app/config.js"
+
+
 def test_webapp_smoke():
-    try:
-        from fastapi.testclient import TestClient
-    except Exception:
-        print("  skip test_webapp_smoke (fastapi not installed)")
-        return
+    # Pure-stdlib server: start it on an ephemeral port and hit it with urllib.
+    import urllib.request
+    from asm import webapp
+    from http.server import ThreadingHTTPServer
     tmp = Path(tempfile.mkdtemp())
     store, _ = _seed_full(tmp)
-    db_path = store.path
     store.close()
-    from asm import webapp
-    webapp._STATE["db"] = db_path
+    webapp._STATE["db"] = str(tmp / "ext.db")
     webapp._STATE["runs_dir"] = tmp / ".runs"
     webapp._STATE["token"] = None
-    c = TestClient(webapp.app)
-    assert c.get("/").status_code == 200
-    assert c.get(f"/targets/{TARGET}").status_code == 200
-    assert len(c.get(f"/api/targets/{TARGET}/graph.json").json()["edges"]) >= 3
-    assert "Attack Surface Report" in c.get(f"/targets/{TARGET}/report").text
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), webapp.Handler)
+    port = httpd.server_address[1]
+    t = threading.Thread(target=httpd.serve_forever, daemon=True)
+    t.start()
+    try:
+        base = f"http://127.0.0.1:{port}"
+        assert b"ReconEngine ASM" in urllib.request.urlopen(base + "/").read()
+        assert urllib.request.urlopen(f"{base}/targets/{TARGET}").status == 200
+        g = json.loads(urllib.request.urlopen(
+            f"{base}/api/targets/{TARGET}/graph.json").read())
+        assert len(g["edges"]) >= 3
+        rep = urllib.request.urlopen(f"{base}/targets/{TARGET}/report").read()
+        assert b"Attack Surface Report" in rep
+    finally:
+        httpd.shutdown()
+
+
+# threading import needed by the stdlib webapp test
+import threading  # noqa: E402
 
 
 def _needs_monkeypatch(fn) -> bool:

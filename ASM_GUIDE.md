@@ -134,7 +134,8 @@ python3 asm.py <command> [options]
 | `graph` | Export the asset-relationship graph (JSON or interactive HTML) |
 | `export` | Export findings as JSON or CSV (ITSM/SIEM feed) |
 | `appscan` | Static-analyse an APK/IPA for secrets + hidden assets (BeVigil-style) |
-| `serve` | Launch the web UI (needs the `[web]` extra) |
+| `codescan` | Search public GitHub code for leaked secrets + subdomains |
+| `serve` | Launch the web UI (pure stdlib, no dependencies) |
 
 ### Mobile app attack surface (`appscan`, BeVigil-style)
 
@@ -215,18 +216,33 @@ severity, cve, epss, kev, risk, business_risk, attack techniques, location) and
 marked ticketed, so re-scans never duplicate. Point it at a Jira/ServiceNow
 bridge or a SOAR webhook.
 
-### Web UI
+### Public code secret leaks (`codescan`)
 
 ```bash
-pip install '.[web]'
+export GITHUB_TOKEN=ghp_...            # code search needs auth
+asm codescan -t example.com                 # search public code for the domain
+asm codescan -t example.com --org acme      # scope to a GitHub org
+```
+
+Searches public GitHub code for the target, pulls matching files, and runs the
+same secret/asset extraction as `appscan`: leaked keys/tokens become findings
+(ATT&CK **T1552**) and any back-end subdomains found are folded into the
+inventory. Rate-limited and best-effort; searches public code only.
+
+### Web UI (`serve`) — no dependencies
+
+The UI is **pure standard library** — no pip install, runs on any Python 3.9+:
+
+```bash
 asm serve                      # http://127.0.0.1:8000
+python -m asm serve            # works even without installing the package
 asm serve --host 0.0.0.0 --port 8080 --token "$(openssl rand -hex 16)"
 ```
 
-Dashboard → start scans (background jobs with live logs) → per-target findings
-(by business risk), asset graph, report download, JSON/CSV export. It starts
-active scans: keep it on localhost or behind `--token` + a firewall, authorized
-targets only.
+An animated console that launches **every** scan type (Recon / App / Code) as
+background jobs with a live-streaming log, plus per-target findings (by business
+risk), asset graph, report download and JSON/CSV export. It starts active scans:
+keep it on localhost or behind `--token` + a firewall, authorized targets only.
 
 ### Export (SIEM/ITSM feed)
 

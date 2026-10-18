@@ -135,45 +135,48 @@ def scan_app(path: str, target: Optional[str] = None) -> Dict:
     with zf:
         blob = _harvest(zf)
 
-    # secrets (dedupe by type+value)
+    out.update(extract_surface(blob, target))
+    # trackers + permissions are app-specific
+    out["trackers"] = sorted({label for pkg, label in _TRACKERS.items()
+                              if pkg in blob})
+    out["permissions"] = sorted(set(_PERM_RE.findall(blob)))[:_MAX_PER_KIND]
+    return out
+
+
+def extract_surface(blob: str, target: Optional[str] = None) -> Dict:
+    """Extract secrets / buckets / urls / (sub)domains from a blob of text.
+
+    Shared by the mobile-app scanner and the GitHub code-leak scanner.
+    """
+    secrets, buckets = [], []
     seen_secret = set()
     for name, (rx, sev) in _SECRET_PATTERNS.items():
         for m in rx.finditer(blob):
             val = m.group(0)
             key = (name, val)
-            if key in seen_secret:
-                continue
-            seen_secret.add(key)
-            out["secrets"].append({"type": name, "severity": sev,
-                                   "value": val[:80]})
+            if key not in seen_secret:
+                seen_secret.add(key)
+                secrets.append({"type": name, "severity": sev, "value": val[:80]})
 
-    # cloud buckets
     seen_bucket = set()
     for name, rx in _BUCKET_PATTERNS.items():
         for m in rx.finditer(blob):
             v = m.group(0)
             if v not in seen_bucket:
                 seen_bucket.add(v)
-                out["buckets"].append({"type": name, "ref": v})
+                buckets.append({"type": name, "ref": v})
 
-    # urls + hosts
     urls = sorted({m.group(0).rstrip('.,)";\'') for m in _URL_RE.finditer(blob)})
-    out["urls"] = urls[:_MAX_PER_KIND]
     hosts = {h.lower() for h in _HOST_RE.findall(blob)}
-    # keep plausible hostnames only
     hosts = {h for h in hosts if "." in h and not h.endswith(
         (".png", ".jpg", ".gif", ".so", ".xml", ".json", ".js", ".html"))}
-    out["domains"] = sorted(hosts)[:_MAX_PER_KIND]
+    subs = []
     if target:
         t = target.lower().lstrip("*.")
-        out["subdomains"] = sorted(h for h in hosts
-                                   if h == t or h.endswith("." + t))
-
-    # trackers + permissions
-    out["trackers"] = sorted({label for pkg, label in _TRACKERS.items()
-                              if pkg in blob})
-    out["permissions"] = sorted(set(_PERM_RE.findall(blob)))[:_MAX_PER_KIND]
-    return out
+        subs = sorted(h for h in hosts if h == t or h.endswith("." + t))
+    return {"secrets": secrets, "buckets": buckets,
+            "urls": urls[:_MAX_PER_KIND], "domains": sorted(hosts)[:_MAX_PER_KIND],
+            "subdomains": subs}
 
 
 def to_scan_result(scan: Dict, target: str) -> ScanResult:
