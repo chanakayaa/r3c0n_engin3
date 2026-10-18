@@ -561,6 +561,39 @@ class Handler(BaseHTTPRequestHandler):
         m = re.match(r"^/targets/([^/]+)/export\.(json|csv)$", path)
         if m:
             return self._export(urllib.parse.unquote(m.group(1)), m.group(2))
+        # ---- REST API (JSON) ----
+        if path == "/api/v1/targets":
+            s = _store()
+            try:
+                return self._send(200, json.dumps([dict(r) for r in s.list_targets()]),
+                                  "application/json")
+            finally:
+                s.close()
+        m = re.match(r"^/api/v1/targets/([^/]+)/(findings|assets|graph|changes)$", path)
+        if m:
+            t = urllib.parse.unquote(m.group(1))
+            what = m.group(2)
+            s = _store()
+            try:
+                if what == "findings":
+                    data = [dict(r) for r in s.findings(t)]
+                elif what == "assets":
+                    data = [dict(r) for r in s.assets(t)]
+                elif what == "changes":
+                    data = [dict(r) for r in s.changes_since(t, limit=200)]
+                else:
+                    data = build_graph(s, t)
+            finally:
+                s.close()
+            return self._send(200, json.dumps(data), "application/json")
+        m = re.match(r"^/api/v1/jobs/([0-9a-f]{6,})$", path)
+        if m:
+            with _JOBS_LOCK:
+                job = _JOBS.get(m.group(1))
+            if not job:
+                return self._send(404, json.dumps({"error": "unknown"}), "application/json")
+            return self._send(200, json.dumps(_job_view(job)), "application/json")
+
         m = re.match(r"^/targets/([^/]+)$", path)
         if m:
             return self._html(render_target(urllib.parse.unquote(m.group(1))))
@@ -571,7 +604,26 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(401, "unauthorized", "text/plain")
         path = urllib.parse.urlparse(self.path).path
         length = int(self.headers.get("Content-Length", 0) or 0)
-        form = urllib.parse.parse_qs(self.rfile.read(length).decode("utf-8", "ignore"))
+        raw = self.rfile.read(length)
+
+        # ---- REST API: trigger a scan with a JSON body ----
+        if path == "/api/v1/scans":
+            try:
+                obj = json.loads(raw or b"{}")
+            except json.JSONDecodeError:
+                return self._send(400, json.dumps({"error": "invalid json"}), "application/json")
+            kind = obj.get("kind", "scan")
+            target = (obj.get("target") or "").strip()
+            if kind not in ("scan", "appscan", "codescan") or not target:
+                return self._send(400, json.dumps(
+                    {"error": "need kind in [scan,appscan,codescan] and target"}),
+                    "application/json")
+            job_id = start_job(kind, target, obj)
+            return self._send(202, json.dumps(
+                {"job_id": job_id, "status_url": f"/api/v1/jobs/{job_id}"}),
+                "application/json")
+
+        form = urllib.parse.parse_qs(raw.decode("utf-8", "ignore"))
 
         def g(k):
             return (form.get(k, [""])[0]).strip()

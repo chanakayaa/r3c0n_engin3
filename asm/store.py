@@ -562,6 +562,28 @@ class Store:
         )
         self.conn.commit()
 
+    def add_derived_findings(self, target: str, findings: List[Finding]) -> int:
+        """Add correlation/derived findings onto the target's latest scan.
+
+        Unlike record_result this does NOT diff/retire other findings — it only
+        upserts the given ones, then re-blends business risk. Findings are
+        risk-scored via the severity fallback in _upsert_findings.
+        """
+        target_id = self._target_id(target)
+        if target_id is None or not findings:
+            return 0
+        row = self.conn.execute(
+            "SELECT id FROM scans WHERE target_id=? ORDER BY id DESC LIMIT 1",
+            (target_id,),
+        ).fetchone()
+        if row is None:
+            return 0
+        scan_id = row["id"]
+        self._upsert_findings(target_id, scan_id, findings)
+        self.conn.commit()
+        self.apply_business_risk(scan_id)
+        return len(findings)
+
     # ------------------------------------------------------------------ #
     # Queries (for CLI / reporting)
     # ------------------------------------------------------------------ #

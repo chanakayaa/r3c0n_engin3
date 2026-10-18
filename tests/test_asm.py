@@ -289,6 +289,32 @@ def test_codescan_parsing():
     assert f.severity == "high" and f.matched_at == "acme/app/config.js"
 
 
+def test_correlation_chains():
+    from asm.correlate import correlate
+    from asm.models import KIND_SUBDOMAIN, KIND_URL, KIND_SERVICE
+    tmp = Path(tempfile.mkdtemp())
+    r = ScanResult(TARGET, str(tmp))
+    r.add_asset(KIND_SUBDOMAIN, "api.demo.example.com")
+    r.add_asset(KIND_URL, "api.demo.example.com", url="https://api.demo.example.com")
+    r.add_asset(KIND_SERVICE, "203.0.113.5:3306", ip="203.0.113.5", port="3306",
+                service="mysql")
+    r.add_finding(Finding("appsec-secret-aws", "Hardcoded secret in app: AWS Access Key ID",
+                          "high", "app.apk", info={"tags": ["secret", "credential"]}))
+    r.add_finding(Finding("git-config", "Exposed .git/config", "medium",
+                          "https://api.demo.example.com/.git/config",
+                          info={"tags": ["exposure"]}))
+    store = Store(str(tmp / "c.db"))
+    sid = store.start_scan(TARGET)
+    store.record_result(sid, r)
+    store.apply_business_risk(sid)
+    chains = correlate(store, TARGET)
+    names = " ".join(c.name for c in chains)
+    assert any(c.template_id == "chain-cred-to-infra" for c in chains), names
+    assert any("MySQL" in c.name for c in chains), names          # exposed DB port
+    assert any("exposure" in c.template_id for c in chains), names  # .git on live host
+    store.close()
+
+
 def test_webapp_smoke():
     # Pure-stdlib server: start it on an ephemeral port and hit it with urllib.
     import urllib.request

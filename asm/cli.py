@@ -17,7 +17,8 @@ Subcommands
   export    export findings as JSON or CSV (ITSM/SIEM feed)
   appscan   static-analyse an APK/IPA for secrets + hidden assets
   codescan  search public GitHub code for leaked secrets
-  serve     launch the web UI (pure stdlib, no dependencies)
+  correlate derive attack-chain findings from the inventory
+  serve     launch the web UI + REST API (pure stdlib, no dependencies)
   intel-update  refresh the local CISA KEV / EPSS cache
   init      write a sample config file
 
@@ -167,6 +168,11 @@ def build_parser() -> argparse.ArgumentParser:
     asp.add_argument("--no-intel", action="store_true")
     asp.add_argument("--offline", action="store_true")
     _add_common(asp)
+
+    corp = sub.add_parser("correlate",
+                          help="derive attack-chain findings from the inventory")
+    corp.add_argument("-t", "--target", required=True)
+    _add_common(corp)
 
     csp = sub.add_parser("codescan",
                          help="search public GitHub code for leaked secrets")
@@ -446,11 +452,25 @@ def cmd_appscan(args) -> int:
                   f"subdomains={len(scan.get('subdomains', []))} "
                   f"urls={len(scan.get('urls', []))} "
                   f"trackers={len(scan.get('trackers', []))}")
+        from .correlate import run_correlation
+        n = run_correlation(store, args.target)
         print(f"\n[✓] App scan complete: {total_secrets} secrets, "
-              f"{total_subs} in-scope subdomains folded into {args.target}")
+              f"{total_subs} in-scope subdomains folded into {args.target}"
+              + (f" ({n} attack chains derived)" if n else ""))
         if args.out:
             Path(args.out).write_text(json.dumps(combined, indent=2))
             print(f"[✓] BeVigil-style JSON written: {args.out}")
+    finally:
+        store.close()
+    return 0
+
+
+def cmd_correlate(args) -> int:
+    from .correlate import run_correlation
+    store = Store(_load_config(args).db)
+    try:
+        n = run_correlation(store, args.target)
+        print(f"[✓] Derived {n} attack-chain finding(s) for {args.target}")
     finally:
         store.close()
     return 0
@@ -476,6 +496,8 @@ def cmd_codescan(args) -> int:
         scan_id = store.start_scan(args.target, results_dir="codescan:github")
         store.record_result(scan_id, result)
         store.apply_business_risk(scan_id)
+        from .correlate import run_correlation
+        run_correlation(store, args.target)
         print(f"[✓] Code-leak scan: {len(scan.get('secrets', []))} secrets, "
               f"{len(scan.get('subdomains', []))} subdomains across "
               f"{len(scan.get('files', []))} files")
@@ -511,6 +533,7 @@ _DISPATCH = {
     "export": cmd_export,
     "appscan": cmd_appscan,
     "codescan": cmd_codescan,
+    "correlate": cmd_correlate,
     "serve": cmd_serve,
     "init": cmd_init,
 }

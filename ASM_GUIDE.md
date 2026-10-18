@@ -135,7 +135,56 @@ python3 asm.py <command> [options]
 | `export` | Export findings as JSON or CSV (ITSM/SIEM feed) |
 | `appscan` | Static-analyse an APK/IPA for secrets + hidden assets (BeVigil-style) |
 | `codescan` | Search public GitHub code for leaked secrets + subdomains |
-| `serve` | Launch the web UI (pure stdlib, no dependencies) |
+| `correlate` | Derive attack-chain findings from the inventory |
+| `serve` | Launch the web UI + REST API (pure stdlib, no dependencies) |
+
+### Attack-path correlation (`correlate`)
+
+Single findings are noise; the value is in the chain. `correlate` reads the
+stored inventory (assets, findings, relationships) and derives higher-severity
+**attack-chain findings** when dangerous combinations co-occur:
+
+- leaked credential **+** reachable live host → initial-access path
+- cloud key **+** exposed bucket → data-exfiltration path
+- source/config exposure (`.git`/`.env`) **on a live host** → source disclosure
+- subdomain takeover → phishing / cookie-theft
+- sensitive service (DB/SSH/RDP/Redis/…) exposed to the internet, worse with a
+  default-login finding on the same host
+
+```bash
+asm correlate -t example.com      # runs automatically after scan/appscan/codescan
+```
+
+It's deterministic and rule-based — the realistically automatable slice of
+"complex" findings, not a replacement for a human tester.
+
+### REST API
+
+`asm serve` also exposes a versioned JSON API (gated by `--token` if set):
+
+```
+GET  /api/v1/targets
+GET  /api/v1/targets/<t>/findings | assets | graph | changes
+GET  /api/v1/jobs/<id>
+POST /api/v1/scans        {"kind":"scan|appscan|codescan","target":"…", …}
+```
+
+```bash
+curl -s localhost:8000/api/v1/targets/example.com/findings
+curl -s -X POST localhost:8000/api/v1/scans -H 'Content-Type: application/json' \
+     -d '{"kind":"scan","target":"example.com"}'
+```
+
+### Docker
+
+An all-in-one image bundles the engine **and** the scanning toolchain
+(subfinder/httpx/dnsx/nuclei/katana/naabu + nmap):
+
+```bash
+docker build -t reconengine-asm .
+ASM_TOKEN=$(openssl rand -hex 16) docker compose up
+# → http://localhost:8000/?token=$ASM_TOKEN
+```
 
 ### Mobile app attack surface (`appscan`, BeVigil-style)
 

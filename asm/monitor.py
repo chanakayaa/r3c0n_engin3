@@ -109,6 +109,12 @@ def run_pass(target: str, config: Config,
         changes = store.record_result(scan_id, result)
         store.apply_business_risk(scan_id)
 
+        # 4b. Attack-path correlation: derive chain findings from the inventory.
+        from .correlate import run_correlation
+        n_chains = run_correlation(store, target)
+        if n_chains:
+            print(f"[+] Correlated {n_chains} attack-chain finding(s)")
+
         # 5. Alert.
         new_finding_keys = {c.subject for c in changes
                             if c.change_type == "finding_new"}

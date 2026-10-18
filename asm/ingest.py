@@ -185,6 +185,7 @@ def _ingest_nuclei(recon: Path, scans: Path, result: ScanResult) -> None:
         recon / "nuclei.jsonl", scans / "nuclei.jsonl",
         recon / "nuclei.json", scans / "nuclei.json",
         recon / "takeover.jsonl", recon / "exposures.jsonl",
+        recon / "misconfig.jsonl",
     ]
     # Only take the first of the generic nuclei filenames, but always include
     # the dedicated takeover/exposures files.

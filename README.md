@@ -60,6 +60,8 @@ The ASM layer (`asm.py`) adds the "monitoring" half of the tool on top of recon:
 * **ITSM feed** — POST each new finding (above a severity floor) to a generic ticket webhook your SOAR/Jira/ServiceNow bridge consumes; idempotent, one ticket per finding.
 * **Mobile app attack surface (BeVigil-style)** — `asm appscan` statically analyses an APK/IPA for hardcoded secrets (keys/tokens/private keys), cloud buckets, and back-end subdomains/endpoints, folding the discovered assets into the ASM inventory and the secrets into prioritised findings.
 * **Public code secret leaks** — `asm codescan` searches public GitHub code for the target's leaked secrets and back-end subdomains (needs a GitHub token), folding them into the inventory.
+* **Attack-path correlation** — `asm correlate` chains individual signals into exploit paths (leaked key + exposed bucket = exfiltration; `.git` on a live host = source disclosure; DB port + default login = breach), elevated above single findings.
+* **REST API + Docker** — a versioned JSON API (`/api/v1/...`) for SIEM/SOAR/CI integration, and an all-in-one Docker image that bundles the scanning toolchain.
 * **Web UI** — a polished, animated console (`asm serve`) to launch **every** scan type (recon / app / code), watch live job logs, browse prioritised findings, view the asset graph and download reports. **Pure standard library — no pip install, runs on any Python 3.9+.**
 
 ### Web UI

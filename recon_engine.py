@@ -321,13 +321,22 @@ class ReconEngine:
                 "-jsonl", "-o", str(self.recon / "takeover.jsonl"),
                 "-silent", "-no-color",
             ])
-        # Information disclosure / exposures against live hosts (include info).
         alive = self.recon / "alive_domains.txt"
         if alive.exists() and alive.read_text(errors="ignore").strip():
+            # Information disclosure / exposures (include info severities).
             subprocess.run([
                 "nuclei", "-l", str(alive), "-tags", "exposure,exposures,disclosure",
                 "-severity", "info,low,medium,high,critical",
                 "-jsonl", "-o", str(self.recon / "exposures.jsonl"),
+                "-silent", "-no-color",
+            ])
+            # Web/network misconfigurations: CORS, open redirect, exposed panels,
+            # default logins, misconfigurations.
+            subprocess.run([
+                "nuclei", "-l", str(alive),
+                "-tags", "cors,redirect,misconfig,misconfiguration,default-login,exposed-panel",
+                "-severity", "low,medium,high,critical",
+                "-jsonl", "-o", str(self.recon / "misconfig.jsonl"),
                 "-silent", "-no-color",
             ])
 
