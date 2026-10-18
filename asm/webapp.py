@@ -203,6 +203,16 @@ async function tick(){try{const r=await fetch('/api/jobs/'+id+location.search);c
  if(j.status!=='running'){document.getElementById('spin')?.remove();
   const link=document.getElementById('resultlink');if(link)link.style.display='inline';return;}
  }catch(e){}setTimeout(tick,2000);}tick();}
+function pollScans(){const tb=document.getElementById('scanrows');if(!tb)return;
+async function tick(){try{const r=await fetch('/api/v1/jobs'+location.search);const js=await r.json();
+ if(!js.length){tb.innerHTML="<tr><td colspan=5 class=muted>No scans this session.</td></tr>";}
+ else{tb.innerHTML=js.map(j=>{const b=j.status==='running'?"<span class='badge run'><span class=dot></span>running</span>":
+  (j.status==='completed'?"<span class='badge ok'>completed</span>":"<span class='badge fail'>failed</span>");
+  const bar=j.status==='running'?"<div class='bar'><i style='width:100%;animation:none'></i></div>":"";
+  return `<tr><td><a href='/jobs/${j.id}${location.search}'>${j.id}</a></td>`+
+   `<td><span class=pill>${j.kind}</span></td><td>${j.target}</td><td>${b}${bar}</td>`+
+   `<td class=muted>${j.started}</td></tr>`;}).join('');}
+ }catch(e){}setTimeout(tick,2000);}tick();}
 """
 
 
@@ -237,6 +247,7 @@ _FONTS = ("<link rel='preconnect' href='https://fonts.googleapis.com'>"
 def _nav(active: str) -> str:
     items = [("dash", "/", "◉", "Dashboard"),
              ("scan", "/#launch", "⌖", "New scan"),
+             ("scans", "/scans", "◷", "Live scans"),
              ("targets", "/#targets", "▤", "Targets")]
     links = "".join(
         f"<a href='{href}{{q}}' class='{'on' if active == key else ''}'>"
@@ -393,6 +404,17 @@ def render_dashboard() -> str:
     return _page("Console", body, active="dash")
 
 
+def render_scans() -> str:
+    body = """
+    <h1 class='ptitle'>Live scan tracker</h1>
+    <p class='pdesc'>Real-time status of recon, app and code-leak jobs this session.</p>
+    <div class='card'><h2>Scans <span class='hint'>auto-refreshing</span></h2>
+      <table><tr><th>Job</th><th>Type</th><th>Target</th><th>Status</th><th>Started</th></tr>
+      <tbody id='scanrows'><tr><td colspan=5 class='muted'>Loading…</td></tr></tbody></table></div>
+    """
+    return _page("Live scans", body, onload="pollScans()", active="scans")
+
+
 def _badge(status: str) -> str:
     cls = {"running": "run", "completed": "ok", "failed": "fail"}.get(status, "")
     dot = "<span class='dot'></span>" if status == "running" else ""
@@ -420,12 +442,16 @@ def render_job(job_id: str) -> Optional[str]:
 
 
 def render_target(target: str) -> str:
+    from .compliance import evaluate_all
+    from .techstack import tech_inventory
     store = _store()
     try:
         findings = store.findings(target, status="open")
         assets = store.assets(target, active_only=True)
         changes = store.changes_since(target, limit=40)
         latest = store.latest_scan(target)
+        compliance = evaluate_all(store, target)
+        tech = tech_inventory(store, target)
     finally:
         store.close()
     maxr = max([f["business_risk"] or 0 for f in findings], default=1) or 1
@@ -450,6 +476,34 @@ def render_target(target: str) -> str:
     crit = sum(1 for f in findings if (f["severity"] or "").lower() == "critical")
     high = sum(1 for f in findings if (f["severity"] or "").lower() == "high")
 
+    # Compliance posture cards (ISO 27001 + DPDP)
+    _ic = {"pass": "✅", "partial": "➖", "fail": "❌", "manual": "✋"}
+    comp_cards = ""
+    for fw in compliance.values():
+        sc = fw["score"]
+        col = "#34d399" if sc >= 75 else ("#fbbf24" if sc >= 50 else "#fb7185")
+        rows = "".join(
+            f"<tr><td>{_ic[c['status']]}</td><td class='mono'>{_esc(c['id'])}</td>"
+            f"<td>{_esc(c['title'])}<div class='muted' style='font-size:12px'>"
+            f"{_esc(c['evidence'])}</div><div class='muted' style='font-size:11.5px'>"
+            f"↳ how: {_esc(c['how'])}</div></td></tr>"
+            for c in fw["controls"])
+        cc = fw["counts"]
+        comp_cards += (
+            f"<div class='card'><h2>{_esc(fw['name'])}</h2>"
+            f"<div style='display:flex;align-items:center;gap:18px;margin-bottom:12px'>"
+            f"<div style='font-family:var(--disp);font-size:40px;font-weight:700;color:{col}'>{sc}%</div>"
+            f"<div class='muted'>assessed {fw['assessed']} · "
+            f"✅ {cc['pass']} · ➖ {cc['partial']} · ❌ {cc['fail']} "
+            f"· ✋ {cc['manual']} manual</div></div>"
+            f"<details><summary class='muted' style='cursor:pointer'>Control detail</summary>"
+            f"<table>{rows}</table></details></div>")
+
+    trows = "".join(
+        f"<tr><td class='num'>{t['count']}</td><td>{_esc(t['technology'])}</td>"
+        f"<td class='muted'>{_esc(', '.join(t['hosts'][:4]))}</td></tr>"
+        for t in tech[:40]) or "<tr><td colspan=3 class='muted'>No technologies fingerprinted yet.</td></tr>"
+
     body = f"""
     <p><a href='/{{q}}'>← dashboard</a></p>
     <div class='card'><h1>{_esc(target)}</h1><p class='muted'>{_esc(scanned)}</p>
@@ -468,6 +522,11 @@ def render_target(target: str) -> str:
       <table><tr><th>Risk</th><th></th><th>Sev</th><th>KEV</th><th>CVE</th><th>ATT&CK</th><th>Name</th><th>Location</th></tr>{frows}</table></div>
     <div class='card'><h2>Assets</h2>
       <table><tr><th>Kind</th><th>Asset</th><th>Source</th></tr>{arows}</table></div>
+    <div class='card'><h2>Technology stack <span class='hint'>CVE watch via <code>asm techstack --cve</code></span></h2>
+      <table><tr><th>Hosts</th><th>Technology</th><th>Seen on</th></tr>{trows}</table></div>
+    <h2 class='ptitle' style='font-size:20px;margin:24px 0 2px'>Compliance posture</h2>
+    <p class='pdesc'>Auto-assessed from external signals. Manual controls need internal attestation — this is a posture indicator, not a certification.</p>
+    {comp_cards}
     <div class='card'><h2>Recent changes</h2>
       <table><tr><th>When</th><th>Type</th><th>Subject</th></tr>{crows}</table></div>
     """
@@ -523,11 +582,15 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authed():
             return self._send(401, "unauthorized", "text/plain")
         path = urllib.parse.urlparse(self.path).path
-        store_routes = {
-            "/": lambda: self._html(render_dashboard()),
-        }
-        if path in store_routes:
-            return store_routes[path]()
+        if path == "/":
+            return self._html(render_dashboard())
+        if path == "/scans":
+            return self._html(render_scans())
+        if path == "/api/v1/jobs":
+            with _JOBS_LOCK:
+                jobs = [_job_view(j) for j in _JOBS.values()]
+            jobs.sort(key=lambda j: j["started"], reverse=True)
+            return self._send(200, json.dumps(jobs), "application/json")
         m = re.match(r"^/jobs/([0-9a-f]{6,})$", path)
         if m:
             page = render_job(m.group(1))
@@ -586,6 +649,24 @@ class Handler(BaseHTTPRequestHandler):
             finally:
                 s.close()
             return self._send(200, json.dumps(data), "application/json")
+        m = re.match(r"^/api/v1/targets/([^/]+)/compliance$", path)
+        if m:
+            from .compliance import evaluate_all
+            t = urllib.parse.unquote(m.group(1))
+            s = _store()
+            try:
+                return self._send(200, json.dumps(evaluate_all(s, t)), "application/json")
+            finally:
+                s.close()
+        m = re.match(r"^/api/v1/targets/([^/]+)/techstack$", path)
+        if m:
+            from .techstack import tech_inventory
+            t = urllib.parse.unquote(m.group(1))
+            s = _store()
+            try:
+                return self._send(200, json.dumps(tech_inventory(s, t)), "application/json")
+            finally:
+                s.close()
         m = re.match(r"^/api/v1/jobs/([0-9a-f]{6,})$", path)
         if m:
             with _JOBS_LOCK:

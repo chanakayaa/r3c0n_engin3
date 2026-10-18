@@ -136,7 +136,45 @@ python3 asm.py <command> [options]
 | `appscan` | Static-analyse an APK/IPA for secrets + hidden assets (BeVigil-style) |
 | `codescan` | Search public GitHub code for leaked secrets + subdomains |
 | `correlate` | Derive attack-chain findings from the inventory |
+| `compliance` | ISO 27001 / DPDP posture score with per-control evidence |
+| `techstack` | Technology inventory + published-CVE watch |
 | `serve` | Launch the web UI + REST API (pure stdlib, no dependencies) |
+
+### Compliance posture (`compliance`) — ISO 27001 + DPDP
+
+Scores your posture against **ISO/IEC 27001:2022** and India's **DPDP Act, 2023**
+from the externally observable attack surface. For each control it reports the
+control point, how to achieve it, the evidence the tool observed, and a status
+(pass / partial / fail / manual):
+
+```bash
+asm compliance -t example.com --framework dpdp
+asm compliance -t example.com --framework all -o compliance.json
+```
+
+Controls that leave no external footprint (policy, consent, retention, training)
+are marked **manual** and excluded from the automated score — flagged for human
+attestation. This is a **posture indicator, not a certification**: e.g. a leaked
+secret fails DPDP "prevention of unauthorised disclosure" and ISO A.8.12, exposed
+databases fail A.8.20, missing HTTPS/HSTS fails A.8.24. Also on the web target
+page and `GET /api/v1/targets/<t>/compliance`.
+
+### Tech-stack monitoring (`techstack`)
+
+```bash
+asm techstack -t example.com              # inventory (offline)
+asm techstack -t example.com --cve        # + best-effort NVD CVE lookup (online)
+```
+
+Aggregates every technology fingerprinted during recon (httpx/whatweb) into a
+per-target stack, and watches NVD for CVEs affecting them. Keyword→CVE matching
+is broad (no exact CPE/version), so treat CVE results as a watch signal, not a
+verdict. On the web target page and `GET /api/v1/targets/<t>/techstack`.
+
+### Live scan tracker
+
+The web UI's **Live scans** page auto-refreshes every running recon/app/code job
+with status + elapsed time (backed by `GET /api/v1/jobs`).
 
 ### Attack-path correlation (`correlate`)
 
