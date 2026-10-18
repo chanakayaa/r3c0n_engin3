@@ -1,0 +1,14 @@
+.git
+.venv
+venv
+__pycache__
+*.pyc
+build
+dist
+*.egg-info
+asm.db
+asm.db-*
+results
+.asm_runs
+*_asm_report.html
+*_graph.html

@@ -13,7 +13,12 @@ import re
 from pathlib import Path
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from tqdm import tqdm
+
+try:
+    from tqdm import tqdm
+except ImportError:  # progress bar is optional; degrade to a no-op wrapper
+    def tqdm(iterable=None, **kwargs):
+        return iterable if iterable is not None else []
 
 MAX_WORKERS = 10
 
@@ -109,20 +114,32 @@ class ReconEngine:
                     if re.match(r"\d+\.\d+\.\d+\.\d+", i)}
 
         ips = set()
+        host_ips = {}  # subdomain -> [ips], feeds the asset-relationship graph
         with ThreadPoolExecutor(MAX_WORKERS) as exe:
-            for f in tqdm(as_completed([exe.submit(resolve, s) for s in self.subs]),
+            futures = {exe.submit(resolve, s): s for s in self.subs}
+            for f in tqdm(as_completed(futures),
                           total=len(self.subs), desc="DNS Resolution"):
-                ips |= f.result()
+                sub = futures[f]
+                resolved = f.result()
+                if resolved:
+                    host_ips[sub] = sorted(resolved)
+                ips |= resolved
 
         self.ips = sorted(ips)
         self.write(self.recon / "domain_ips.txt", "\n".join(self.ips))
+        self.write(self.recon / "host_ips.json", json.dumps(host_ips, indent=2))
 
     def alive(self):
-        subprocess.run(
-            ["httpx", "-l", self.recon / "subdomains.txt", "-silent"],
-            stdout=(self.recon / "alive_domains.txt").open("w")
-        )
         self.alive_domains = self.recon / "alive_domains.txt"
+        if not self.tool("httpx"):
+            print("[!] httpx not installed, skipping live-host probing")
+            self.alive_domains.touch()  # keep an empty file for later steps
+            return
+        with self.alive_domains.open("w") as out:
+            subprocess.run(
+                ["httpx", "-l", str(self.recon / "subdomains.txt"), "-silent"],
+                stdout=out,
+            )
 
     def cdn(self):
         self.write(self.recon / "cdn_origin.txt",
@@ -211,6 +228,9 @@ class ReconEngine:
             "permissions-policy"
         ]
 
+        if not self.tool("httpx") or not self.alive_domains.exists():
+            return
+
         results = []
         for url in open(self.alive_domains):
             raw = self.run(["httpx", "-u", url.strip(),
@@ -258,16 +278,81 @@ class ReconEngine:
 
         self.write(readable, "\n".join(out))
 
+    # ================= VULNERABILITY SCAN =================
+
+    def vuln(self):
+        """Run nuclei against live hosts, emitting JSONL for ASM ingestion."""
+        alive = self.recon / "alive_domains.txt"
+        if not alive.exists() or not alive.read_text(errors="ignore").strip():
+            return
+        try:
+            from asm.vuln import run_nuclei  # local import keeps recon standalone
+        except Exception:
+            if self.tool("nuclei"):
+                subprocess.run([
+                    "nuclei", "-l", str(alive), "-jsonl",
+                    "-o", str(self.recon / "nuclei.jsonl"),
+                    "-severity", "critical,high,medium,low",
+                    "-silent", "-no-color",
+                ])
+            return
+        run_nuclei(
+            targets_file=alive,
+            output_file=self.recon / "nuclei.jsonl",
+            severities=["critical", "high", "medium", "low"],
+        )
+
+    def takeover(self):
+        """Dedicated subdomain-takeover + exposure checks (bug-bounty classes).
+
+        The main nuclei run already includes these templates, but running the
+        takeover/exposure tag sets explicitly guarantees coverage (and low
+        severities that the main run's floor may skip), emitting JSONL the ASM
+        layer ingests the same way as nuclei.jsonl.
+        """
+        if not self.tool("nuclei"):
+            return
+        # Subdomain takeover: probe ALL discovered subdomains, not just live
+        # hosts (a dangling CNAME often has no live homepage).
+        subs = self.recon / "subdomains.txt"
+        if subs.exists() and subs.read_text(errors="ignore").strip():
+            subprocess.run([
+                "nuclei", "-l", str(subs), "-tags", "takeover",
+                "-jsonl", "-o", str(self.recon / "takeover.jsonl"),
+                "-silent", "-no-color",
+            ])
+        alive = self.recon / "alive_domains.txt"
+        if alive.exists() and alive.read_text(errors="ignore").strip():
+            # Information disclosure / exposures (include info severities).
+            subprocess.run([
+                "nuclei", "-l", str(alive), "-tags", "exposure,exposures,disclosure",
+                "-severity", "info,low,medium,high,critical",
+                "-jsonl", "-o", str(self.recon / "exposures.jsonl"),
+                "-silent", "-no-color",
+            ])
+            # Web/network misconfigurations: CORS, open redirect, exposed panels,
+            # default logins, misconfigurations.
+            subprocess.run([
+                "nuclei", "-l", str(alive),
+                "-tags", "cors,redirect,misconfig,misconfiguration,default-login,exposed-panel",
+                "-severity", "low,medium,high,critical",
+                "-jsonl", "-o", str(self.recon / "misconfig.jsonl"),
+                "-silent", "-no-color",
+            ])
+
     # ================= SCAN =================
 
     def scan(self):
         if not self.ips:
             return
+        if not self.tool("nmap"):
+            print("[!] nmap not installed, skipping port scan")
+            return
         tgt = self.scans / "targets.txt"
         self.write(tgt, "\n".join(self.ips))
         subprocess.run([
             "nmap", "-Pn", "-sC", "-sV",
-            "-iL", tgt, "-oA", self.scans / "nmap"
+            "-iL", str(tgt), "-oA", str(self.scans / "nmap")
         ])
 
     # ================= RUN =================
@@ -291,18 +376,44 @@ class ReconEngine:
             self.crawl,
             self.dirs,
             self.harvester,
-            self.scan
+            self.scan,
+            self.vuln,
+            self.takeover
         ]
+
+        self.preflight()
 
         for step in pipeline:
             print(f"[+] {step.__name__}")
-            step()
+            try:
+                step()
+            except Exception as exc:  # a broken/missing tool must not abort the pass
+                print(f"[!] step '{step.__name__}' failed: {exc} (continuing)")
 
         print("\n[✓] Recon completed")
 
+    # Tools the pipeline drives; missing ones are skipped, not fatal.
+    EXPECTED_TOOLS = [
+        "subfinder", "assetfinder", "amass", "dnsx", "httpx", "nmap",
+        "nuclei", "whatweb", "sslscan", "wafw00f", "asnmap", "whois",
+        "waybackurls", "gau", "katana", "feroxbuster", "theHarvester",
+    ]
+
+    def preflight(self):
+        missing = [t for t in self.EXPECTED_TOOLS if not self.tool(t)]
+        if missing:
+            print(f"[!] {len(missing)}/{len(self.EXPECTED_TOOLS)} recon tools "
+                  f"not found: {', '.join(missing)}")
+            print("[!] Those stages will be skipped. Install the toolchain with "
+                  "`bash setup.sh` (not sudo) for full coverage.\n")
+
 # ================= ENTRY =================
 
-if __name__ == "__main__":
+def main():
     banner()
     args = parse_args()
     ReconEngine(args).run_all()
+
+
+if __name__ == "__main__":
+    main()

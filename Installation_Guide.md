@@ -22,18 +22,28 @@ To simplify installation, a **`setup.sh` script** is provided that installs and 
 
 ```bash
 git clone git@github.com:chanakayaa/r3c0n_engin3.git
-cd ReconEngine
+cd r3c0n_engin3
 ```
 
 ---
 
-### 2️⃣ Run Setup Script (Required – as Root)
+### 2️⃣ Run Setup Script (Required – as your normal user)
 
-The setup script installs all required tools and dependencies.
+The setup script installs all required tools and dependencies. **Do not run it
+with `sudo`** — it calls `sudo` itself only for the apt packages, so the Go
+tools install into *your* `~/go/bin` (running it as root would put them in
+`/root/go/bin`, off your PATH).
 
 ```bash
-sudo chmod +x *
-sudo ./setup.sh
+chmod +x setup.sh
+bash setup.sh
+```
+
+When it finishes, open a new shell (or `source ~/.bashrc`) so `~/go/bin` is on
+your PATH, then verify:
+
+```bash
+which subfinder httpx nmap nuclei
 ```
 
 🔹 This will install:
@@ -79,7 +89,7 @@ If these commands work, setup is successful ✅
 > ❗ **Do NOT run recon as root unless required for specific scans**
 
 ```bash
-python3 main.py -t example.com --crawl --dirs
+python3 asm.py scan -t example.com --crawl --dirs
 ```
 
 📂 Output will be generated under:
@@ -124,7 +134,7 @@ The report includes:
 If tools are missing or broken, re-run:
 
 ```bash
-sudo ./setup.sh
+bash setup.sh
 ```
 
 ---
@@ -142,18 +152,13 @@ sudo ./setup.sh
 ## 🧠 Tip (Best Practice)
 
 ```bash
-# Install once as root
-sudo ./
-setup.sh
+# Install the toolchain once (as your normal user, NOT sudo)
+bash setup.sh
 
-# Use as normal user
-python3 
-main.py
- -t 
-target.com
-python3 
-report.py
- results/target_TIMESTAMP
+# Run an ASM pass, then view the prioritized findings / report
+python3 asm.py scan -t target.com
+python3 asm.py findings -t target.com --min-severity medium
+python3 asm.py report -t target.com -o report.html
 ```
 
 ---

@@ -1,0 +1,32 @@
+# ReconEngine ASM — local/VPS deployment.
+#
+#   ASM_TOKEN=$(openssl rand -hex 16) docker compose up --build
+#   open http://localhost:8000/?token=$ASM_TOKEN
+#
+# Persisted data (inventory DB + scan results) lives in the `asm-data` volume.
+
+services:
+  asm:
+    build: .
+    image: reconengine-asm
+    command: >
+      python -m asm serve --host 0.0.0.0 --port 8000
+      --db /data/asm.db --token ${ASM_TOKEN:-}
+    ports:
+      - "127.0.0.1:8000:8000"      # bind to loopback on the host by default
+    volumes:
+      - asm-data:/data
+    environment:
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}     # enables codescan
+      - NVD_API_KEY=${NVD_API_KEY:-}       # higher NVD rate limit (optional)
+    restart: unless-stopped
+
+  # Roadmap: swap SQLite for Postgres for multi-user / multi-node deployments.
+  # db:
+  #   image: postgres:16
+  #   environment: [POSTGRES_PASSWORD=change-me, POSTGRES_DB=asm]
+  #   volumes: [pg-data:/var/lib/postgresql/data]
+
+volumes:
+  asm-data:
+  # pg-data:

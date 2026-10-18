@@ -1,309 +1,155 @@
-#!/bin/bash
+#!/usr/bin/env bash
+#
+# ReconEngine ASM - toolchain installer (Debian / Ubuntu / Kali / WSL)
+#
+# Installs the external CLIs the recon + scan pipeline drives. Run it as your
+# NORMAL user (NOT with sudo) - it calls sudo itself only for apt packages, so
+# the Go tools land in *your* ~/go/bin instead of /root/go/bin.
+#
+#   bash setup.sh
+#
+set -u
 
-# This script installs all required tools for the automation framework
-
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
+info()  { echo -e "${YELLOW}[*]${NC} $*"; }
+ok()    { echo -e "${GREEN}[+]${NC} $*"; }
+err()   { echo -e "${RED}[!]${NC} $*"; }
 
 echo -e "${GREEN}"
 echo "============================================"
-echo "   R3c0n_engin3 - Setup Script"
-echo "   Installing Modules"
+echo "   ReconEngine ASM - Toolchain Setup"
 echo "============================================"
 echo -e "${NC}"
 
-# Check if running as root
-if [[ $EUID -ne 0 ]]; then
-   echo -e "${RED}This script must be run as root (use sudo)${NC}" 
-   exit 1
+# --- Must NOT be root: Go tools must install into the real user's home -------
+if [ "$(id -u)" -eq 0 ]; then
+    err "Run this as your normal user, not with sudo."
+    err "It will call sudo itself for apt. Otherwise Go tools install to"
+    err "/root/go/bin and won't be on your PATH."
+    exit 1
 fi
 
-# Update system
-echo -e "${YELLOW}[*] Updating system packages...${NC}"
-apt update -y
-apt upgrade -y
+if ! command -v apt-get >/dev/null 2>&1; then
+    err "This installer targets Debian/Ubuntu/Kali (apt). For other distros,"
+    err "install the tools listed in the README manually."
+    exit 1
+fi
 
-# Install dependencies
-echo -e "${YELLOW}[*] Installing dependencies...${NC}"
-apt install -y \
-    git \
-    python3 \
-    python3-pip \
+SUDO="sudo"
+
+# ============ APT PACKAGES ====================================================
+info "Installing base packages via apt (you may be prompted for your password)"
+$SUDO apt-get update -y
+$SUDO apt-get install -y \
+    git curl wget unzip jq \
     golang-go \
-    wget \
-    curl \
-    unzip \
-    chromium \
-    chromium-driver \
-    build-essential \
-    libpcap-dev
+    nmap whois dnsutils \
+    sslscan whatweb \
+    python3 python3-pip pipx \
+    build-essential libpcap-dev \
+    || err "some apt packages failed - continuing"
 
-# Setup Go environment
-echo -e "${YELLOW}[*] Setting up Go environment...${NC}"
-export GOPATH=$HOME/go
-export PATH=$PATH:$GOPATH/bin
-echo 'export GOPATH=$HOME/go' >> ~/.bashrc
-echo 'export PATH=$PATH:$GOPATH/bin' >> ~/.bashrc
+# feroxbuster ships in apt on newer Ubuntu/Kali; best-effort.
+$SUDO apt-get install -y feroxbuster 2>/dev/null \
+    && ok "feroxbuster installed" \
+    || err "feroxbuster not in apt here - install from its releases if needed"
 
-# Install Python packages
-echo -e "${YELLOW}[*] Installing Python packages...${NC}"
-pip3 install --upgrade pip
-pip3 install colorama requests beautifulsoup4 dnspython
+# ============ GO ENVIRONMENT ==================================================
+export GOPATH="${GOPATH:-$HOME/go}"
+export GOBIN="$GOPATH/bin"
+export PATH="$PATH:$GOBIN"
+mkdir -p "$GOBIN"
 
-# Create tools directory
-TOOLS_DIR="$HOME/bug-bounty-tools"
-mkdir -p $TOOLS_DIR
-cd $TOOLS_DIR
+if ! command -v go >/dev/null 2>&1; then
+    err "Go is not available even after apt; cannot install Go-based tools."
+else
+    ok "Using $(go version)"
+fi
 
-echo -e "${GREEN}[+] Installing tools in $TOOLS_DIR${NC}"
+# ============ GO TOOLS ========================================================
+# name<TAB>module@version  (install loop continues past individual failures)
+GO_TOOLS=(
+  "subfinder|github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest"
+  "httpx|github.com/projectdiscovery/httpx/cmd/httpx@latest"
+  "dnsx|github.com/projectdiscovery/dnsx/cmd/dnsx@latest"
+  "naabu|github.com/projectdiscovery/naabu/v2/cmd/naabu@latest"
+  "katana|github.com/projectdiscovery/katana/cmd/katana@latest"
+  "nuclei|github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest"
+  "asnmap|github.com/projectdiscovery/asnmap/cmd/asnmap@latest"
+  "assetfinder|github.com/tomnomnom/assetfinder@latest"
+  "waybackurls|github.com/tomnomnom/waybackurls@latest"
+  "anew|github.com/tomnomnom/anew@latest"
+  "qsreplace|github.com/tomnomnom/qsreplace@latest"
+  "unfurl|github.com/tomnomnom/unfurl@latest"
+  "gau|github.com/lc/gau/v2/cmd/gau@latest"
+  "ffuf|github.com/ffuf/ffuf/v2@latest"
+  "dalfox|github.com/hahwul/dalfox/v2@latest"
+  "gospider|github.com/jaeles-project/gospider@latest"
+  "hakrawler|github.com/hakluke/hakrawler@latest"
+  "subjs|github.com/lc/subjs@latest"
+)
 
-# ============ SUBDOMAIN ENUMERATION ============
-echo -e "${YELLOW}[*] Installing Subdomain Enumeration Tools...${NC}"
+if command -v go >/dev/null 2>&1; then
+    for entry in "${GO_TOOLS[@]}"; do
+        name="${entry%%|*}"; mod="${entry##*|}"
+        info "go install $name"
+        GOBIN="$GOBIN" go install -v "$mod" 2>/dev/null \
+            && ok "$name" || err "$name failed (skipped)"
+    done
 
-# Subfinder
-echo "Installing subfinder..."
-go install -v 
-github.com
-/projectdiscovery/subfinder/v2/cmd/subfinder@latest
+    # amass is large; install separately so a failure doesn't stop the rest.
+    info "go install amass (large, may take a while)"
+    GOBIN="$GOBIN" go install -v github.com/owasp-amass/amass/v4/...@master \
+        2>/dev/null && ok "amass" || err "amass failed (optional, skipped)"
+fi
 
-# Amass
-echo "Installing amass..."
-go install -v 
-github.com
-/owasp-amass/amass/v4/...@master
+# ============ PYTHON CLI TOOLS (via pipx, PEP 668-safe) =======================
+if command -v pipx >/dev/null 2>&1; then
+    pipx ensurepath >/dev/null 2>&1 || true
+    for pkg in theHarvester wafw00f arjun uro; do
+        info "pipx install $pkg"
+        pipx install "$pkg" >/dev/null 2>&1 && ok "$pkg" \
+            || err "$pkg failed (skipped)"
+    done
+else
+    err "pipx unavailable; skipping theHarvester/wafw00f/arjun/uro"
+fi
 
-# Assetfinder
-echo "Installing assetfinder..."
-go install 
-github.com
-/tomnomnom/assetfinder@latest
+# ============ NUCLEI TEMPLATES ================================================
+if command -v nuclei >/dev/null 2>&1; then
+    info "Updating nuclei templates"
+    nuclei -update-templates -silent 2>/dev/null && ok "nuclei templates updated" \
+        || err "nuclei template update failed (run 'nuclei -update-templates' later)"
+fi
 
-# Findomain
-echo "Installing findomain..."
-wget 
-https://github.com/
-Findomain/Findomain/releases/latest/download/
-findomain-linux-i386.zip
-unzip 
-findomain-linux-i386.zip
-chmod +x findomain
-mv findomain /usr/local/bin/
-rm 
-findomain-linux-i386.zip
+# ============ PATH PERSISTENCE ===============================================
+RC="$HOME/.bashrc"; [ -n "${ZSH_VERSION:-}" ] && RC="$HOME/.zshrc"
+if ! grep -q 'go/bin' "$RC" 2>/dev/null; then
+    {
+        echo ''
+        echo '# ReconEngine ASM toolchain'
+        echo 'export GOPATH=$HOME/go'
+        echo 'export PATH=$PATH:$HOME/go/bin'
+    } >> "$RC"
+    ok "Added \$HOME/go/bin to PATH in $RC"
+fi
 
-# dnsx
-echo "Installing dnsx..."
-go install -v github.com/projectdiscovery/dnsx/cmd/dnsx@latest
-
-# ============ PORT SCANNING ============
-echo -e "${YELLOW}[*] Installing Port Scanning Tools...${NC}"
-
-# Naabu
-echo "Installing naabu..."
-go install -v github.com/projectdiscovery/naabu/v2/cmd/naabu@latest
-
-# Nmap (usually pre-installed on Kali)
-apt install -y nmap
-
-# RustScan
-echo "Installing rustscan..."
-wget 
-https://github.com/
-RustScan/RustScan/releases/download/2.1.1/rustscan_2.1.1_amd64.deb
-dpkg -i rustscan_2.1.1_amd64.deb || apt-get install -f -y
-rm rustscan_2.1.1_amd64.deb
-
-# ============ HTTP PROBING ============
-echo -e "${YELLOW}[*] Installing HTTP Tools...${NC}"
-
-# httpx
-echo "Installing httpx..."
-go install -v 
-github.com
-/projectdiscovery/httpx/cmd/httpx@latest
-
-# ============ CRAWLING & CONTENT DISCOVERY ============
-echo -e "${YELLOW}[*] Installing Crawling Tools...${NC}"
-
-# Katana
-echo "Installing katana..."
-go install 
-github.com
-/projectdiscovery/katana/cmd/katana@latest
-
-# Gospider
-echo "Installing gospider..."
-go install 
-github.com
-/jaeles-project/gospider@latest
-
-# Waybackurls
-echo "Installing waybackurls..."
-go install 
-github.com
-/tomnomnom/waybackurls@latest
-
-# Gau
-echo "Installing gau..."
-go install 
-github.com
-/lc/gau/v2/cmd/gau@latest
-
-# Hakrawler
-echo "Installing hakrawler..."
-go install 
-github.com
-/hakluke/hakrawler@latest
-
-# ============ PARAMETER DISCOVERY ============
-echo -e "${YELLOW}[*] Installing Parameter Tools...${NC}"
-
-# Paramspider
-echo "Installing paramspider..."
-git clone 
-https://github.com/
-devanshbatham/ParamSpider
-cd ParamSpider
-pip3 install .
-cd ..
-
-# Arjun
-echo "Installing arjun..."
-pip3 install arjun
-
-# ============ FUZZING ============
-echo -e "${YELLOW}[*] Installing Fuzzing Tools...${NC}"
-
-# ffuf
-echo "Installing ffuf..."
-go install 
-github.com
-/ffuf/ffuf/v2@latest
-
-# ============ JAVASCRIPT ANALYSIS ============
-echo -e "${YELLOW}[*] Installing JavaScript Tools...${NC}"
-
-# LinkFinder
-echo "Installing linkfinder..."
-git clone 
-https://github.com/
-GerbenJavado/LinkFinder.git
-cd LinkFinder
-pip3 install -r requirements.txt
-python3 
-setup.py
- install
-cd ..
-
-# subjs
-echo "Installing subjs..."
-go install 
-github.com
-/lc/subjs@latest
-
-# ============ VULNERABILITY SCANNERS ============
-echo -e "${YELLOW}[*] Installing Vulnerability Scanners...${NC}"
-
-# Nuclei
-echo "Installing nuclei..."
-go install -v 
-github.com
-/projectdiscovery/nuclei/v3/cmd/nuclei@latest
-
-# Nuclei Templates
-echo "Installing nuclei templates..."
-nuclei -update-templates
-
-# Dalfox (XSS Scanner)
-echo "Installing dalfox..."
-go install 
-github.com
-/hahwul/dalfox/v2@latest
-
-# SQLMap
-echo "Installing sqlmap..."
-apt install -y sqlmap
-
-# XSStrike
-echo "Installing xsstrike..."
-git clone 
-https://github.com/
-s0md3v/XSStrike.git
-cd XSStrike
-pip3 install -r requirements.txt
-cd ..
-
-# Corsy (CORS Scanner)
-echo "Installing corsy..."
-git clone 
-https://github.com/
-s0md3v/Corsy.git
-cd Corsy
-pip3 install -r requirements.txt
-cd ..
-
-# ============ UTILITY TOOLS ============
-echo -e "${YELLOW}[*] Installing Utility Tools...${NC}"
-
-# anew (for deduplication)
-echo "Installing anew..."
-go install -v 
-github.com
-/tomnomnom/anew@latest
-
-# uro (URL deduplication)
-echo "Installing uro..."
-pip3 install uro
-
-# qsreplace
-echo "Installing qsreplace..."
-go install 
-github.com
-/tomnomnom/qsreplace@latest
-
-# unfurl
-echo "Installing unfurl..."
-go install 
-github.com
-/tomnomnom/unfurl@latest
-
-# jq (JSON processor)
-apt install -y jq
-
-# ============ WORDLISTS ============
-echo -e "${YELLOW}[*] Installing Wordlists...${NC}"
-
-# SecLists
-echo "Installing SecLists..."
-git clone 
-https://github.com/
-danielmiessler/SecLists.git /usr/share/wordlists/SecLists
-
-# ============ CLEANUP ============
-echo -e "${YELLOW}[*] Cleaning up...${NC}"
-apt autoremove -y
-apt autoclean -y
-
-# Set permissions
-chmod +x /usr/local/bin/* 2>/dev/null
-
-echo -e "${GREEN}"
-echo "============================================"
-echo "   Installation Complete!"
-echo "============================================"
-echo -e "${NC}"
-echo -e "${GREEN}[+] All tools installed successfully!${NC}"
-echo -e "${YELLOW}[!] Please run: source ~/.bashrc${NC}"
-echo -e "${YELLOW}[!] Or restart your terminal for changes to take effect${NC}"
+# ============ VERIFY ==========================================================
 echo ""
-echo -e "${GREEN}Installed tools location: $TOOLS_DIR${NC}"
-echo -e "${GREEN}Go binaries location: $GOPATH/bin${NC}"
+info "Verifying core tools (needed by the ASM pipeline):"
+MISSING=0
+for t in subfinder httpx dnsx nmap nuclei whatweb sslscan; do
+    if command -v "$t" >/dev/null 2>&1 || [ -x "$GOBIN/$t" ]; then
+        ok "$t"
+    else
+        err "$t MISSING"; MISSING=$((MISSING+1))
+    fi
+done
+
 echo ""
-echo -e "${YELLOW}To verify installation, run:${NC}"
-echo "  subfinder -version"
-echo "  nuclei -version"
-echo "  httpx -version"
-echo ""
-echo -e "${GREEN}Ready to use BugHunter Pro!${NC}"
+echo -e "${GREEN}============================================${NC}"
+ok "Setup finished."
+echo -e "${YELLOW}[!] Open a new shell or run:  source $RC${NC}"
+echo -e "${YELLOW}[!] Then verify:  which subfinder httpx nmap nuclei${NC}"
+[ "$MISSING" -gt 0 ] && err "$MISSING core tool(s) missing - re-run or install them manually."
+echo -e "${GREEN}============================================${NC}"

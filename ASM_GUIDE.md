@@ -1,0 +1,509 @@
+# 🛰 ReconEngine ASM — Guide
+
+Attack Surface Management + vulnerability scanning on top of the ReconEngine
+recon pipeline. This guide covers the `asm.py` command-line tool.
+
+> ⚠️ **Authorized security testing only.** The ASM pipeline actively probes
+> targets (DNS, HTTP, port scanning, and nuclei vulnerability checks). Only run
+> it against assets you own or are explicitly authorized to test.
+
+---
+
+## How it works
+
+Every ASM "pass" runs the same five stages:
+
+```
+recon  →  vulnerability scan  →  ingest  →  persist + diff  →  alert
+```
+
+1. **Recon** — reuses the existing `ReconEngine` pipeline (subdomains, DNS,
+   live hosts, tech, TLS, headers, nmap, …) and writes artifacts under
+   `results/<target>_<timestamp>/`.
+2. **Vulnerability scan** — runs `nuclei` against the discovered live hosts.
+3. **Ingest** — parses the recon artifacts (including `nmap.xml` and
+   `nuclei.jsonl`) into a structured set of **assets** and **findings**.
+4. **Persist + diff** — stores everything in a local SQLite inventory
+   (`asm.db`) and compares this pass to the target's previous pass to produce a
+   **changeset**.
+5. **Alert** — summarizes new assets / new findings to the console and,
+   optionally, to a webhook or Slack.
+
+Because state is persistent, the second and later passes tell you **what
+changed** — the core value of ASM — instead of dumping the whole surface again.
+
+### Assets tracked
+
+| Kind | Key format | Source |
+|------|-----------|--------|
+| `subdomain` | `sub.example.com` | subfinder / amass / assetfinder |
+| `ip` | `93.184.216.34` | dnsx / nmap |
+| `service` | `93.184.216.34:443` | nmap (open ports) |
+| `url` | `www.example.com` | httpx (live hosts) |
+| `technology` | `host|Nginx` | httpx tech-detect |
+
+### Findings
+
+Findings come from `nuclei` (de-duplicated by `template-id` + location) and
+from a built-in **missing-security-headers** check. Each finding is tracked
+with a status of `open` or `resolved`: if a finding seen in a previous scan is
+absent in the current one, it is automatically marked **resolved** and a
+`finding_resolved` change is recorded.
+
+### Bug-bounty vulnerability coverage
+
+The `vuln` step runs **nuclei's full template set**, which already covers
+subdomain takeover, information disclosure/exposures, CVEs, default logins,
+misconfigurations and more. On top of that, a dedicated `takeover` step runs
+two high-signal classes explicitly so they're never missed:
+
+- **Subdomain takeover** — `nuclei -tags takeover` against *all* discovered
+  subdomains (not just live hosts, since a dangling CNAME often has no homepage)
+  → `recon/takeover.jsonl`.
+- **Information disclosure / exposures** — `nuclei -tags exposure,exposures,disclosure`
+  at all severities (including `info`/`low`) against live hosts →
+  `recon/exposures.jsonl`.
+
+All three JSONL files are ingested and **de-duplicated** into the inventory, so
+overlapping templates aren't double-counted. Takeover findings map to ATT&CK
+**T1584** and exposures to **T1213** automatically.
+
+> Every finding is risk-ranked even without KEV/EPSS enrichment: a severity-based
+> base score (`critical 40 … info 3`) is applied as a fallback, so offline/air-
+> gapped runs still prioritise correctly.
+
+### Threat-intelligence enrichment & risk scoring
+
+Raw severity isn't enough to decide what to fix first. After each vuln scan,
+findings are enriched (see `asm/intel.py`) and assigned a **risk score (0–100)**
+that blends three free, no-key data sources:
+
+| Signal | Source | Meaning |
+|--------|--------|---------|
+| **KEV** | [CISA Known Exploited Vulnerabilities](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) | The CVE is **being exploited in the wild** right now |
+| **EPSS** | [FIRST.org EPSS](https://www.first.org/epss/) | Probability (0–1) the CVE will be exploited in the next 30 days |
+| **CVE / CVSS** | [NVD](https://nvd.nist.gov/) (optional) | Map a product+version/CPE to its CVEs (`--nvd`, honours `NVD_API_KEY`) |
+
+```
+risk = base(severity) + epss·40 + (20 if KEV) , capped at 100
+```
+
+So a **KEV critical with EPSS 0.97 scores ~99**, while a high-severity CVE with
+no known exploitation and low EPSS scores far lower — the queue sorts by what
+attackers are *actually* using. The formula is deliberately simple and
+explainable.
+
+CVE ids are extracted from the nuclei `template-id`, the `classification.cve-id`
+field, and tags/references.
+
+**Caching & offline behaviour.** KEV and EPSS responses are cached under
+`~/.cache/recon-asm` (override with the `RECON_ASM_CACHE` env var or
+`intel_cache_dir` in config), refreshed roughly daily. With `--offline` (or no
+connectivity) enrichment uses only the cache; with neither network nor cache it
+is skipped cleanly and the risk score falls back to severity alone.
+
+Refresh the cache ahead of a scan:
+
+```bash
+python3 asm.py intel-update
+```
+
+Disable enrichment entirely with `--no-intel`.
+
+---
+
+## Commands
+
+```
+python3 asm.py <command> [options]
+```
+
+| Command | Purpose |
+|---------|---------|
+| `scan` | Run one full ASM pass for a target |
+| `watch` | Run passes continuously on an interval |
+| `ingest` | Import an existing `results/` directory into the inventory (no recon) |
+| `targets` | List tracked targets |
+| `assets` | List tracked assets for a target |
+| `findings` | List findings for a target |
+| `changes` | Show recorded changes for a target |
+| `report` | Generate an ASM HTML report |
+| `intel-update` | Refresh the local CISA KEV / EPSS intel cache |
+| `tag` | Tag assets with a business criticality (glob pattern) |
+| `tags` | List business-criticality tags for a target |
+| `graph` | Export the asset-relationship graph (JSON or interactive HTML) |
+| `export` | Export findings as JSON or CSV (ITSM/SIEM feed) |
+| `appscan` | Static-analyse an APK/IPA for secrets + hidden assets (BeVigil-style) |
+| `codescan` | Search public GitHub code for leaked secrets + subdomains |
+| `correlate` | Derive attack-chain findings from the inventory |
+| `techstack` | Technology inventory + published-CVE watch |
+| `serve` | Launch the web UI + REST API (pure stdlib, no dependencies) |
+
+### Tech-stack monitoring (`techstack`)
+
+```bash
+asm techstack -t example.com              # inventory (offline)
+asm techstack -t example.com --cve        # + best-effort NVD CVE lookup (online)
+```
+
+Aggregates every technology fingerprinted during recon (httpx/whatweb) into a
+per-target stack, and watches NVD for CVEs affecting them. Keyword→CVE matching
+is broad (no exact CPE/version), so treat CVE results as a watch signal, not a
+verdict. On the web target page and `GET /api/v1/targets/<t>/techstack`.
+
+### Live scan tracker
+
+The web UI's **Live scans** page auto-refreshes every scan (running + completed,
+across all targets) with status + asset/finding counts, backed by
+`GET /api/v1/scans` which reads the persisted scan history — so scans show up
+whether they were started from the UI or the CLI, and survive a restart.
+
+### Attack-path correlation (`correlate`)
+
+Single findings are noise; the value is in the chain. `correlate` reads the
+stored inventory (assets, findings, relationships) and derives higher-severity
+**attack-chain findings** when dangerous combinations co-occur:
+
+- leaked credential **+** reachable live host → initial-access path
+- cloud key **+** exposed bucket → data-exfiltration path
+- source/config exposure (`.git`/`.env`) **on a live host** → source disclosure
+- subdomain takeover → phishing / cookie-theft
+- sensitive service (DB/SSH/RDP/Redis/…) exposed to the internet, worse with a
+  default-login finding on the same host
+
+```bash
+asm correlate -t example.com      # runs automatically after scan/appscan/codescan
+```
+
+It's deterministic and rule-based — the realistically automatable slice of
+"complex" findings, not a replacement for a human tester.
+
+### REST API
+
+`asm serve` also exposes a versioned JSON API (gated by `--token` if set):
+
+```
+GET  /api/v1/targets
+GET  /api/v1/targets/<t>/findings | assets | graph | changes
+GET  /api/v1/scans        (all scans + status + counts)
+GET  /api/v1/jobs/<id>
+POST /api/v1/scans        {"kind":"scan|appscan|codescan","target":"…", …}
+```
+
+```bash
+curl -s localhost:8000/api/v1/targets/example.com/findings
+curl -s -X POST localhost:8000/api/v1/scans -H 'Content-Type: application/json' \
+     -d '{"kind":"scan","target":"example.com"}'
+```
+
+### Docker
+
+An all-in-one image bundles the engine **and** the scanning toolchain
+(subfinder/httpx/dnsx/nuclei/katana/naabu + nmap):
+
+```bash
+docker build -t reconengine-asm .
+ASM_TOKEN=$(openssl rand -hex 16) docker compose up
+# → http://localhost:8000/?token=$ASM_TOKEN
+```
+
+### Mobile app attack surface (`appscan`, BeVigil-style)
+
+A mobile app is part of the external attack surface: it ships hardcoded secrets
+and references back-end subdomains/APIs that subdomain enumeration never sees.
+`appscan` statically analyses an APK/IPA (no decompiler, no network) and folds
+what it finds into the ASM inventory:
+
+```bash
+asm appscan -t tesla.com --apk app-release.apk -o report.json
+asm appscan -t example.com --apk a.apk --ipa b.ipa     # several apps at once
+```
+
+It extracts and stores:
+
+- **Hardcoded secrets** → findings (AWS/GCP keys, Stripe/Slack/GitHub tokens,
+  Firebase keys, JWTs, private keys), mapped to ATT&CK **T1552**; severity by
+  key type (private key / Stripe live = critical).
+- **Cloud storage references** (S3 / GCS / Azure Blob / Firebase) → medium
+  exposure findings + url assets.
+- **In-scope subdomains** discovered in the app → tracked `subdomain` assets
+  (they show up in the inventory, graph and future scan diffs).
+- **URLs / API endpoints** → `url` assets.
+- **Third-party trackers/SDKs** → info findings; **permissions** → metadata.
+
+Findings are risk-scored and prioritised exactly like recon findings, so an app
+secret leak surfaces at the top alongside everything else. This is read-only
+static analysis of a file you supply — download the APK/IPA yourself, only for
+apps in scope.
+| `init` | Write a sample config file |
+
+### Business-context prioritisation
+
+Risk from EPSS/KEV answers "how exploitable", not "how much do *we* care". Tag
+assets with a criticality (1=low .. 5=critical) and the score blends into a
+**business risk** that drives sorting everywhere (CLI, report, UI, export):
+
+```bash
+asm tag  -t example.com --pattern "*.payments.example.com" --criticality 5 --sensitivity pii
+asm tag  -t example.com --pattern "blog.example.com"       --criticality 1
+asm tags -t example.com
+```
+
+Patterns are globs matched against each finding's host. `business_risk =
+min(100, risk_score × multiplier)` with multipliers
+`{1:0.7, 2:0.85, 3:1.0, 4:1.2, 5:1.5}` (untagged hosts default to 3). You can
+also set these in the config file under `criticality`.
+
+### MITRE ATT&CK tagging
+
+Each finding is mapped to ATT&CK tactics/techniques from its nuclei tags,
+template-id, name and CWE using a bundled keyword map
+(`asm/data/attack_map.json` — extend it freely). Technique ids show in the CLI
+`findings` view, the report and the export.
+
+### Asset-relationship graph
+
+```bash
+asm graph -t example.com -o graph.json          # nodes + edges as JSON
+asm graph -t example.com --html -o graph.html   # interactive page (cytoscape)
+```
+
+Edges: `subdomain → ip` (resolves_to), `ip → service` (exposes),
+`host → technology` (runs), `subdomain → url` (http). Node size/ring reflects
+the highest risk seen on that host. This is a read-only structural map — the
+foundation for attack-path visualisation, not exploitation.
+
+### ITSM / ticket webhook
+
+Feed new findings to your own ticketing automation (section-13 integration):
+
+```json
+{ "ticket_webhook": "https://hooks.internal/asm", "ticket_min_severity": "high" }
+```
+
+Each **new** finding at or above the floor is POSTed once (flat JSON: name,
+severity, cve, epss, kev, risk, business_risk, attack techniques, location) and
+marked ticketed, so re-scans never duplicate. Point it at a Jira/ServiceNow
+bridge or a SOAR webhook.
+
+### Public code secret leaks (`codescan`)
+
+```bash
+export GITHUB_TOKEN=ghp_...            # code search needs auth
+asm codescan -t example.com                 # search public code for the domain
+asm codescan -t example.com --org acme      # scope to a GitHub org
+```
+
+Searches public GitHub code for the target, pulls matching files, and runs the
+same secret/asset extraction as `appscan`: leaked keys/tokens become findings
+(ATT&CK **T1552**) and any back-end subdomains found are folded into the
+inventory. Rate-limited and best-effort; searches public code only.
+
+### Web UI (`serve`) — no dependencies
+
+The UI is **pure standard library** — no pip install, runs on any Python 3.9+:
+
+```bash
+asm serve                      # http://127.0.0.1:8000
+python -m asm serve            # works even without installing the package
+asm serve --host 0.0.0.0 --port 8080 --token "$(openssl rand -hex 16)"
+```
+
+An animated console that launches **every** scan type (Recon / App / Code) as
+background jobs with a live-streaming log, plus per-target findings (by business
+risk), asset graph, report download and JSON/CSV export. It starts active scans:
+keep it on localhost or behind `--token` + a firewall, authorized targets only.
+
+### Export (SIEM/ITSM feed)
+
+```bash
+asm export -t example.com --format json -o findings.json
+asm export -t example.com --format csv  -o findings.csv
+```
+
+### `scan`
+
+```bash
+python3 asm.py scan -t example.com \
+    --crawl --dirs \
+    --severity critical,high,medium \
+    --slack-webhook https://hooks.slack.com/services/XXX \
+    --alert-min-severity high
+```
+
+| Flag | Meaning |
+|------|---------|
+| `-t, --target` | Root domain to scan (required) |
+| `--crawl` | Enable katana crawling in recon |
+| `--dirs` | Enable feroxbuster directory brute-forcing in recon |
+| `--no-vuln` | Skip the nuclei vulnerability scan |
+| `--severity` | Comma list of nuclei severities (default `critical,high,medium,low`) |
+| `--nuclei-templates` | Path to custom nuclei templates |
+| `--webhook` | Generic JSON webhook for alerts |
+| `--slack-webhook` | Slack incoming webhook for alerts |
+| `--alert-min-severity` | Minimum finding severity that triggers an alert (default `low`) |
+| `--db` | Inventory DB path (default `asm.db`) |
+| `--config` | JSON config file (CLI flags override it) |
+
+### `watch`
+
+```bash
+python3 asm.py watch -t example.com --interval 1440   # every 24h
+```
+
+`watch` loops in the foreground. For real deployments prefer `cron`
+(see below) so the process survives reboots and doesn't hold a terminal.
+
+### `findings`
+
+```bash
+python3 asm.py findings -t example.com --status open --min-severity medium
+```
+
+### `changes`
+
+```bash
+python3 asm.py changes -t example.com --limit 50
+```
+
+### `ingest`
+
+Already ran recon separately? Pull it into the inventory without re-scanning:
+
+```bash
+python3 asm.py ingest -t example.com results/example.com_20260101_120000
+```
+
+---
+
+## Config file
+
+Generate a template:
+
+```bash
+python3 asm.py init -o asm.config.json
+```
+
+```json
+{
+  "db": "asm.db",
+  "results_root": "results",
+  "vuln_scan": true,
+  "severities": ["critical", "high", "medium", "low"],
+  "nuclei_rate_limit": 150,
+  "nuclei_templates": null,
+  "intel_enrich": true,
+  "intel_offline": false,
+  "intel_cache_dir": null,
+  "ticket_webhook": null,
+  "ticket_min_severity": "high",
+  "criticality": [
+    {"pattern": "*.payments.example.com", "criticality": 5, "sensitivity": "pii"}
+  ],
+  "crawl": false,
+  "dirs": false,
+  "webhook": null,
+  "slack_webhook": null,
+  "alert_min_severity": "low"
+}
+```
+
+Use it with any command:
+
+```bash
+python3 asm.py scan -t example.com --config asm.config.json
+```
+
+CLI flags always override config-file values.
+
+> 🔐 `asm.config.json` may hold webhook URLs — it is git-ignored by default.
+
+---
+
+## Scheduling continuous monitoring
+
+### cron (recommended)
+
+Daily scan at 02:30, logging output:
+
+```cron
+30 2 * * * cd /opt/r3c0n_engin3 && /usr/bin/python3 asm.py scan -t example.com \
+    --config /opt/r3c0n_engin3/asm.config.json >> /var/log/asm-example.log 2>&1
+```
+
+### systemd timer
+
+`/etc/systemd/system/asm-example.service`:
+
+```ini
+[Unit]
+Description=ASM scan for example.com
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/r3c0n_engin3
+ExecStart=/usr/bin/python3 asm.py scan -t example.com --config /opt/r3c0n_engin3/asm.config.json
+```
+
+`/etc/systemd/system/asm-example.timer`:
+
+```ini
+[Unit]
+Description=Daily ASM scan for example.com
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+```bash
+sudo systemctl enable --now asm-example.timer
+```
+
+---
+
+## Alert payloads
+
+### Generic webhook (`--webhook`)
+
+`POST application/json`:
+
+```json
+{
+  "target": "example.com",
+  "summary": "ASM report for example.com\n  new assets: 3 ...",
+  "changes": [
+    {"change_type": "asset_added", "subject": "subdomain:dev.example.com",
+     "detail": {"kind": "subdomain", "key": "dev.example.com"}}
+  ],
+  "new_findings": [
+    {"template_id": "CVE-2024-9999", "name": "Critical bug",
+     "severity": "critical", "matched_at": "https://dev.example.com"}
+  ]
+}
+```
+
+### Slack (`--slack-webhook`)
+
+Posts the formatted text summary as a Slack message.
+
+An alert is only sent when something worth attention happened: a new finding at
+or above `alert_min_severity`, a newly discovered asset, or a resolved finding.
+The console summary always prints.
+
+---
+
+## Data model
+
+Everything lives in a single SQLite file (`asm.db`):
+
+* `targets` — tracked root domains
+* `scans` — every pass, with status and counts
+* `assets` + `scan_assets` — the inventory and which assets each scan observed
+* `findings` — de-duplicated vulnerabilities with open/resolved status
+* `changes` — the per-scan changeset
+
+You can query it directly with any SQLite client for custom dashboards.
