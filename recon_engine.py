@@ -302,6 +302,35 @@ class ReconEngine:
             severities=["critical", "high", "medium", "low"],
         )
 
+    def takeover(self):
+        """Dedicated subdomain-takeover + exposure checks (bug-bounty classes).
+
+        The main nuclei run already includes these templates, but running the
+        takeover/exposure tag sets explicitly guarantees coverage (and low
+        severities that the main run's floor may skip), emitting JSONL the ASM
+        layer ingests the same way as nuclei.jsonl.
+        """
+        if not self.tool("nuclei"):
+            return
+        # Subdomain takeover: probe ALL discovered subdomains, not just live
+        # hosts (a dangling CNAME often has no live homepage).
+        subs = self.recon / "subdomains.txt"
+        if subs.exists() and subs.read_text(errors="ignore").strip():
+            subprocess.run([
+                "nuclei", "-l", str(subs), "-tags", "takeover",
+                "-jsonl", "-o", str(self.recon / "takeover.jsonl"),
+                "-silent", "-no-color",
+            ])
+        # Information disclosure / exposures against live hosts (include info).
+        alive = self.recon / "alive_domains.txt"
+        if alive.exists() and alive.read_text(errors="ignore").strip():
+            subprocess.run([
+                "nuclei", "-l", str(alive), "-tags", "exposure,exposures,disclosure",
+                "-severity", "info,low,medium,high,critical",
+                "-jsonl", "-o", str(self.recon / "exposures.jsonl"),
+                "-silent", "-no-color",
+            ])
+
     # ================= SCAN =================
 
     def scan(self):
@@ -339,7 +368,8 @@ class ReconEngine:
             self.dirs,
             self.harvester,
             self.scan,
-            self.vuln
+            self.vuln,
+            self.takeover
         ]
 
         self.preflight()

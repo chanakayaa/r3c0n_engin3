@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from asm.intel import Enricher, extract_cve, risk_score          # noqa: E402
 from asm.ingest import ingest_results, parse_nuclei_jsonl         # noqa: E402
-from asm.models import Finding                                     # noqa: E402
+from asm.models import Finding, ScanResult                         # noqa: E402
 from asm.store import Store                                        # noqa: E402
 from asm.report import build_asm_report                            # noqa: E402
 
@@ -207,6 +207,46 @@ def test_ticket_idempotency(monkeypatch):
     monitor._dispatch_tickets(store, TARGET, cfg)   # nothing new -> no posts
     assert first >= 1 and calls["n"] == first, (first, calls["n"])
     store.close()
+
+
+def test_risk_fallback_without_intel():
+    # Findings must be ranked by severity even when the enricher never runs.
+    tmp = Path(tempfile.mkdtemp())
+    r = ScanResult(TARGET, str(tmp))
+    r.add_finding(Finding("x-takeover", "Subdomain takeover", "high",
+                          "https://dev.demo.example.com", info={"tags": ["takeover"]}))
+    r.add_finding(Finding("x-git", "Exposed .git/config", "medium",
+                          "https://demo.example.com/.git/config",
+                          info={"tags": ["exposure"]}))
+    store = Store(str(tmp / "nf.db"))
+    sid = store.start_scan(TARGET)
+    store.record_result(sid, r)          # no Enricher.enrich() at all
+    store.apply_business_risk(sid)
+    rows = store.findings(TARGET)
+    assert all(row["risk_score"] > 0 for row in rows), "risk must not be 0"
+    assert rows[0]["severity"] == "high", "high finding must sort first"
+    store.close()
+
+
+def test_ingest_merges_takeover_and_exposures():
+    tmp = Path(tempfile.mkdtemp())
+    recon = tmp / "recon"
+    recon.mkdir(parents=True)
+    (tmp / "scans").mkdir()
+    (recon / "nuclei.jsonl").write_text(json.dumps(
+        {"template-id": "CVE-1", "matched-at": "https://ex.com",
+         "info": {"name": "c", "severity": "high"}}))
+    (recon / "takeover.jsonl").write_text(json.dumps(
+        {"template-id": "gh-takeover", "matched-at": "dev.ex.com",
+         "info": {"name": "takeover", "severity": "high", "tags": ["takeover"]}}))
+    # exposures file repeats the takeover line -> must de-duplicate
+    (recon / "exposures.jsonl").write_text(
+        json.dumps({"template-id": "git", "matched-at": "https://ex.com/.git/config",
+                    "info": {"name": "git", "severity": "medium"}}) + "\n" +
+        json.dumps({"template-id": "gh-takeover", "matched-at": "dev.ex.com",
+                    "info": {"name": "takeover", "severity": "high"}}))
+    res = ingest_results("ex.com", str(tmp))
+    assert len(res.findings) == 3, [f.template_id for f in res.findings]
 
 
 def test_webapp_smoke():

@@ -42,6 +42,16 @@ def severity_rank(sev: Optional[str]) -> int:
     return SEVERITY_ORDER.get((sev or "unknown").lower(), 0)
 
 
+# Base risk points per severity, used both by the intel enricher and as a
+# fallback so a finding always has a non-zero risk even when intel is disabled.
+SEVERITY_BASE = {"critical": 40, "high": 32, "medium": 22, "low": 12,
+                 "info": 3, "unknown": 8}
+
+
+def base_risk(sev: Optional[str]) -> float:
+    return float(SEVERITY_BASE.get((sev or "unknown").lower(), 8))
+
+
 @dataclass
 class Asset:
     """A single discovered asset belonging to a target."""

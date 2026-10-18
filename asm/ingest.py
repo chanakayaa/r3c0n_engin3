@@ -175,12 +175,33 @@ def _ingest_nmap(scans: Path, result: ScanResult) -> None:
 
 
 def _ingest_nuclei(recon: Path, scans: Path, result: ScanResult) -> None:
-    """Read nuclei JSONL output if present (``-jsonl`` format)."""
-    for candidate in (recon / "nuclei.jsonl", scans / "nuclei.jsonl",
-                      recon / "nuclei.json", scans / "nuclei.json"):
-        if candidate.exists():
-            result.findings.extend(parse_nuclei_jsonl(candidate.read_text(errors="ignore")))
-            return
+    """Read nuclei-format JSONL output (main scan + takeover + exposures).
+
+    All three files share the nuclei ``-jsonl`` schema. We de-duplicate by the
+    finding's dedupe key so overlapping templates aren't counted twice.
+    """
+    seen = set()
+    sources = [
+        recon / "nuclei.jsonl", scans / "nuclei.jsonl",
+        recon / "nuclei.json", scans / "nuclei.json",
+        recon / "takeover.jsonl", recon / "exposures.jsonl",
+    ]
+    # Only take the first of the generic nuclei filenames, but always include
+    # the dedicated takeover/exposures files.
+    generic_taken = False
+    for candidate in sources:
+        if not candidate.exists():
+            continue
+        is_generic = candidate.name in ("nuclei.jsonl", "nuclei.json")
+        if is_generic and generic_taken:
+            continue
+        for f in parse_nuclei_jsonl(candidate.read_text(errors="ignore")):
+            k = f.dedupe_key()
+            if k not in seen:
+                seen.add(k)
+                result.findings.append(f)
+        if is_generic:
+            generic_taken = True
 
 
 def parse_nuclei_jsonl(text: str) -> List[Finding]:

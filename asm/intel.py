@@ -32,7 +32,7 @@ import urllib.request
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
-from .models import Finding, severity_rank
+from .models import Finding, severity_rank, SEVERITY_BASE
 
 KEV_URL = ("https://www.cisa.gov/sites/default/files/feeds/"
            "known_exploited_vulnerabilities.json")
@@ -41,9 +41,8 @@ NVD_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 
 CVE_RE = re.compile(r"CVE-\d{4}-\d{4,7}", re.IGNORECASE)
 
-# Base points per severity before intel boosts.
-_SEV_BASE = {"critical": 40, "high": 32, "medium": 22, "low": 12,
-             "info": 3, "unknown": 8}
+# Base points per severity before intel boosts (shared with the store fallback).
+_SEV_BASE = SEVERITY_BASE
 
 
 def default_cache_dir() -> Path:

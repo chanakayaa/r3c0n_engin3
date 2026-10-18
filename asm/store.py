@@ -31,6 +31,7 @@ from .models import (
     Change,
     Finding,
     ScanResult,
+    base_risk,
     severity_rank,
     utcnow,
 )
@@ -303,6 +304,9 @@ class Store:
             attack = getattr(f, "attack", None)
             attack_json = json.dumps(attack, sort_keys=True) if attack else None
             attack_tech = getattr(f, "attack_techniques", None) or None
+            # Fall back to a severity-based risk so findings are still ranked
+            # when intel enrichment is disabled or unavailable.
+            rscore = f.risk_score if f.risk_score else base_risk(f.severity)
             cur = self.conn.execute(
                 "SELECT id FROM findings WHERE target_id=? AND dedupe_key=?",
                 (target_id, dk),
@@ -315,7 +319,7 @@ class Store:
                     "status='open', severity=?, name=?, info=?, cve=?, epss=?, "
                     "kev=?, risk_score=?, attack=?, attack_techniques=? WHERE id=?",
                     (now, scan_id, f.severity, f.name, info_json, f.cve, f.epss,
-                     1 if f.kev else 0, f.risk_score, attack_json, attack_tech,
+                     1 if f.kev else 0, rscore, attack_json, attack_tech,
                      row["id"]),
                 )
             else:
@@ -326,7 +330,7 @@ class Store:
                     "first_seen_at, last_seen_at, first_scan_id, last_scan_id, status) "
                     "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'open')",
                     (target_id, dk, f.template_id, f.name, f.severity, f.matched_at,
-                     info_json, f.cve, f.epss, 1 if f.kev else 0, f.risk_score,
+                     info_json, f.cve, f.epss, 1 if f.kev else 0, rscore,
                      attack_json, attack_tech,
                      now, now, scan_id, scan_id),
                 )

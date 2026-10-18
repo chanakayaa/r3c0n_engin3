@@ -50,6 +50,28 @@ with a status of `open` or `resolved`: if a finding seen in a previous scan is
 absent in the current one, it is automatically marked **resolved** and a
 `finding_resolved` change is recorded.
 
+### Bug-bounty vulnerability coverage
+
+The `vuln` step runs **nuclei's full template set**, which already covers
+subdomain takeover, information disclosure/exposures, CVEs, default logins,
+misconfigurations and more. On top of that, a dedicated `takeover` step runs
+two high-signal classes explicitly so they're never missed:
+
+- **Subdomain takeover** — `nuclei -tags takeover` against *all* discovered
+  subdomains (not just live hosts, since a dangling CNAME often has no homepage)
+  → `recon/takeover.jsonl`.
+- **Information disclosure / exposures** — `nuclei -tags exposure,exposures,disclosure`
+  at all severities (including `info`/`low`) against live hosts →
+  `recon/exposures.jsonl`.
+
+All three JSONL files are ingested and **de-duplicated** into the inventory, so
+overlapping templates aren't double-counted. Takeover findings map to ATT&CK
+**T1584** and exposures to **T1213** automatically.
+
+> Every finding is risk-ranked even without KEV/EPSS enrichment: a severity-based
+> base score (`critical 40 … info 3`) is applied as a fallback, so offline/air-
+> gapped runs still prioritise correctly.
+
 ### Threat-intelligence enrichment & risk scoring
 
 Raw severity isn't enough to decide what to fix first. After each vuln scan,
